@@ -75,6 +75,13 @@ class App(tk.Tk):
         self.last_good_port = None
         self.cancel_start_event = threading.Event()
 
+        # --- автовыключение сервера после завершения всех фоновых задач ---
+        self.active_tasks_count = 0
+        self.active_tasks_lock = threading.Lock()
+        self.auto_shutdown_var = tk.BooleanVar(value=False)
+        self.auto_shutdown_var.trace_add("write", lambda *a: self._update_auto_shutdown_label())
+        self._shutdown_check_token = 0
+
         self._build_ui()
         self.after(100, self._poll_output_queue)
         self.after(200, self._set_initial_sash_position)
@@ -118,6 +125,12 @@ class App(tk.Tk):
         self._build_main_tab()
         self._build_settings_tab()
 
+    def _update_auto_shutdown_label(self):
+        if self.auto_shutdown_var.get():
+            self.auto_shutdown_status_label.config(text="🟢 ВКЛ", foreground="#1a7f37")
+        else:
+            self.auto_shutdown_status_label.config(text="⚪ ВЫКЛ", foreground="#888888")
+
     def _build_main_tab(self):
         outer = self.tab_main
 
@@ -145,6 +158,12 @@ class App(tk.Tk):
         ttk.Button(server_frame, text="Отмена", command=self.on_cancel_start).pack(side="left", padx=4)
         ttk.Button(server_frame, text="⛔ Остановить генерацию", command=self.on_stop_generation).pack(side="left", padx=4)
         ttk.Button(server_frame, text="Выключить сервер", command=self.on_stop).pack(side="left", padx=4)
+
+        ttk.Checkbutton(server_frame, text="Автовыключение после завершения задач",
+                         variable=self.auto_shutdown_var).pack(side="left", padx=(16, 2))
+        self.auto_shutdown_status_label = ttk.Label(server_frame, text="")
+        self.auto_shutdown_status_label.pack(side="left", padx=2)
+        self._update_auto_shutdown_label()
 
         # --- блок баланса ---
         balance_frame = ttk.LabelFrame(frame, text="Баланс")
@@ -316,8 +335,46 @@ class App(tk.Tk):
         self.after(100, self._poll_output_queue)
 
     def run_in_background(self, func, *args):
-        thread = threading.Thread(target=func, args=args, daemon=True)
+        with self.active_tasks_lock:
+            self.active_tasks_count += 1
+
+        def wrapper():
+            try:
+                func(*args)
+            finally:
+                with self.active_tasks_lock:
+                    self.active_tasks_count -= 1
+                    remaining = self.active_tasks_count
+                if remaining == 0:
+                    self.after(0, self._schedule_auto_shutdown_check)
+
+        thread = threading.Thread(target=wrapper, daemon=True)
         thread.start()
+
+    def _schedule_auto_shutdown_check(self):
+        """Вызывается (в основном потоке), когда все фоновые задачи закончились.
+        Если включено автовыключение - ждём немного (вдруг сейчас начнётся
+        следующий шаг очереди) и проверяем ещё раз перед реальным выключением."""
+        if not self.auto_shutdown_var.get():
+            return
+        self._shutdown_check_token += 1
+        token = self._shutdown_check_token
+        self.log("\n[Автовыключение] Все текущие задачи завершены. Если за 15 секунд "
+                  "не начнётся ничего нового - сервер выключится автоматически.\n")
+        self.after(15000, lambda: self._maybe_auto_shutdown(token))
+
+    def _maybe_auto_shutdown(self, token):
+        if not self.auto_shutdown_var.get():
+            return
+        if token != self._shutdown_check_token:
+            return  # за это время запустилась новая задача - эта проверка устарела
+        with self.active_tasks_lock:
+            still_idle = (self.active_tasks_count == 0)
+        if not still_idle:
+            return
+        self.log("[Автовыключение] Задач по-прежнему нет - выключаю сервер...\n")
+        self.auto_shutdown_var.set(False)  # выключаем галочку, чтобы не сработало повторно
+        self.run_in_background(self._stop_task)
 
     def get_ssh_client(self):
         """Возвращает объект подключения (параметры ip/port/ключ) - само
