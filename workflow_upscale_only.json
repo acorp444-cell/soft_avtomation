@@ -1,0 +1,43 @@
+{
+  "1": {
+    "inputs": {
+      "image": "placeholder.jpg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {"title": "Load Image (raw from API)"}
+  },
+  "10": {
+    "inputs": {
+      "model_name": "4x-UltraSharp.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {"title": "Load Upscale Model"}
+  },
+  "11": {
+    "inputs": {
+      "upscale_model": ["10", 0],
+      "image": ["1", 0]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {"title": "Upscale Image (using Model)"}
+  },
+  "12": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 2048,
+      "height": 1152,
+      "crop": "disabled",
+      "image": ["11", 0]
+    },
+    "class_type": "ImageScale",
+    "_meta": {"title": "Resize to Final 2048x1152"}
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "final",
+      "images": ["12", 0]
+    },
+    "class_type": "SaveImage",
+    "_meta": {"title": "Сохранить изображение"}
+  }
+}
