@@ -1,0 +1,8 @@
+{
+  "runpod_api_key": "вставьте_сюда_свой_ключ",
+  "openai_api_key": "вставьте_сюда_свой_ключ",
+  "openai_base_url": "",
+  "lumean_api_key": "вставьте_сюда_свой_ключ",
+  "royaltechno_api_key": "вставьте_сюда_свой_ключ",
+  "lumean_template_id": "01a00ab2-3a8a-716c-b0f5-e205530b39d3"
+}
