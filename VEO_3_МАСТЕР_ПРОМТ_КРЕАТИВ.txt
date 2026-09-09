@@ -94,9 +94,16 @@ OBJECT_LIBRARY, сцен, требующих строгой визуальной
 • реальных узнаваемых людей, особенно политиков, в AI не генерируй
 
 Для исторических сцен: exact year or decade, historically accurate,
-period accurate. Для СССР: soviet architecture/infrastructure/vehicles/
+period accurate — это касается ВСЕГО в кадре: архитектуры, техники,
+транспорта, и ОБЯЗАТЕЛЬНО людей — их одежды, снаряжения, обуви,
+причёсок, аксессуаров. Всё это должно строго соответствовать эпохе и
+году действия, заявленным в сценарии (например, для полярной экспедиции
+начала XX века: шерсть, кожа, меха, парусина, ручная выделка снаряжения
+— никакого современного синтетического текстиля, современной обуви или
+техники). Для СССР: soviet architecture/infrastructure/vehicles/
 clothing, period-correct details. Запрещены: modern cars, plastic
-windows, modern electronics, contemporary architecture.
+windows, modern electronics, contemporary architecture, современная
+одежда/обувь/снаряжение в исторических сценах.
 
 Для животных используй точный вид (Przewalski's horse, European bison,
 Eurasian lynx, White-tailed eagle, Brown bear и т.п. — не общие названия).
