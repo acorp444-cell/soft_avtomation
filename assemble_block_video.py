@@ -398,6 +398,20 @@ def main():
                 continue
             valid_rows.append((row.get("num", "").strip(), duration))
 
+        def _num_sort_key(item):
+            num_str = item[0]
+            try:
+                return (0, int(num_str))
+            except ValueError:
+                return (1, num_str)  # некорректный/нечисловой номер - в конец
+
+        original_order = [n for n, _ in valid_rows]
+        valid_rows.sort(key=_num_sort_key)
+        sorted_order = [n for n, _ in valid_rows]
+        if original_order != sorted_order:
+            print(f"[!] Строки CSV были не по порядку num - пересортировала "
+                  f"перед сборкой (было: {original_order}, стало: {sorted_order})")
+
         for i, (num, duration) in enumerate(valid_rows):
             is_last = (i == len(valid_rows) - 1)
 
