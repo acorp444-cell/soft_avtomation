@@ -305,6 +305,13 @@ scene_ru, img_prompt_1, img_prompt_2 и video_prompt должны описыва
 • period accurate
 • era-appropriate details
 
+Это ОБЯЗАТЕЛЬНО касается и людей в кадре — одежда, снаряжение, обувь,
+причёски, аксессуары должны строго соответствовать эпохе и году
+действия сценария (не только для советской темы, а для ЛЮБОЙ
+исторической сцены). Например, для полярной экспедиции начала XX века:
+шерсть, кожа, меха, парусина, ручная выделка снаряжения — никакого
+современного синтетического текстиля или обуви.
+
 Для СССР автоматически добавляй контекст:
 • soviet architecture
 • soviet infrastructure
@@ -317,7 +324,7 @@ scene_ru, img_prompt_1, img_prompt_2 и video_prompt должны описыва
 • plastic windows
 • modern electronics
 • modern advertisements
-• modern clothing
+• modern clothing (в любых исторических сценах, не только советских)
 • contemporary architecture
 
 Для животных всегда используй точный вид.
