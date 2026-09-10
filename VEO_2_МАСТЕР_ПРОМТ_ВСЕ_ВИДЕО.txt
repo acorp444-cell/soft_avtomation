@@ -286,6 +286,28 @@ scene_ru, img_prompt_1, img_prompt_2 и video_prompt должны описыва
 • img_prompt_2: 50–90 слов
 • video_prompt: 60–110 слов
 
+ЗАПРЕЩЕНО писать промт абстрактно/поэтично, набором настроений или идей
+без конкретной картинки — генератор изображений не понимает абстракции,
+ему нужны только конкретные зрительные детали (кто/что именно в кадре,
+как выглядит, во что одет, поза, где происходит, какой свет).
+
+ПРИМЕР ПЛОХОГО ПРОМТА (так писать НЕЛЬЗЯ — это абстрактные идеи, а не
+описание картинки, и в промте даже нет style anchor):
+"historic meeting, shocking realization of European guise, desolation
+mirrored with relief"
+
+ПРИМЕР ХОРОШЕГО ПРОМТА на ту же сцену (конкретно, по структуре выше, со
+style anchor в конце):
+"Eye-level medium shot, two gaunt 19th-century Arctic explorers facing a
+clean-shaven British polar officer, their faces and hands blackened with
+soot and seal blubber grease, matted beards, ragged fur and canvas
+clothing crusted with grime, worn leather boots, rocky Arctic coastline
+with a driftwood hut and seabirds in the background, pale overcast
+summer light, weathered expedition gear scattered nearby, documentary
+realism, photorealistic, cinematic color grading, muted desaturated
+palette, cold tones, soft natural light, 35mm film look, shallow depth
+of field, 16:9, no text, no captions, no watermark"
+
 КРИТИЧНО:
 • не используй ";" внутри промтов
 • не используй переносы строк внутри промтов

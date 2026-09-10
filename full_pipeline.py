@@ -171,13 +171,36 @@ def strip_wrapping(text: str) -> str:
     return text
 
 
+STYLE_ANCHOR_MARKER = "documentary realism"  # начало обязательного style anchor - должен быть в каждом промте
+MIN_PROMPT_WORDS = 25  # ниже этого промт явно слишком короткий/абстрактный, не по формату
+
+
+def _find_low_quality_nums(result: dict) -> set:
+    """Находит кадры, у которых img_prompt_1/img_prompt_2/video_prompt явно
+    нарушают формат мастер-промта: нет обязательного style anchor, или промт
+    подозрительно короткий (несколько абстрактных слов вместо развёрнутого
+    описания сцены по формуле [крупность+ракурс]+[объект]+[действие]+
+    [окружение]+[реквизит]+[свет]+style anchor)."""
+    bad_nums = set()
+    for num, r in result.items():
+        for field in ("img_prompt_1", "img_prompt_2", "video_prompt"):
+            text = (r.get(field) or "").strip()
+            if not text or text == "-":
+                continue
+            if STYLE_ANCHOR_MARKER not in text.lower() or len(text.split()) < MIN_PROMPT_WORDS:
+                bad_nums.add(num)
+                break
+    return bad_nums
+
+
 def generate_creative_fields(frames_group: list, library: str, master_prompt: str,
                               client, model: str, max_retries: int = 2):
     """Отправляет группу уже готовых кадров (num + voiceover_ru) модели,
     получает творческие поля для каждого. Возвращает словарь {num: {поля}}.
-    Проверяет, что вернулись строки на ВСЕ переданные num, и что нет
-    повреждённых строк (лишние ';' внутри промта) - при проблеме
-    повторяет запрос."""
+    Проверяет, что вернулись строки на ВСЕ переданные num, что нет
+    повреждённых строк (лишние ';' внутри промта), и что промты не слишком
+    короткие/абстрактные (есть style anchor, достаточно слов) - при любой
+    из этих проблем повторяет запрос."""
     frames_list_text = "\n".join(
         f"[{f['num']}] {f['voiceover_ru']}" for f in frames_group
     )
@@ -215,8 +238,9 @@ def generate_creative_fields(frames_group: list, library: str, master_prompt: st
             result[num] = r
 
         missing_nums = expected_nums - set(result.keys())
+        low_quality_nums = _find_low_quality_nums(result)
 
-        if not corrupted and not missing_nums:
+        if not corrupted and not missing_nums and not low_quality_nums:
             return result
 
         problems = []
@@ -224,12 +248,15 @@ def generate_creative_fields(frames_group: list, library: str, master_prompt: st
             problems.append(f"{len(corrupted)} повреждённых строк")
         if missing_nums:
             problems.append(f"нет ответа на кадры {sorted(missing_nums)}")
+        if low_quality_nums:
+            problems.append(f"слишком короткие/абстрактные промты у кадров {sorted(low_quality_nums)}")
         print(f"    [!] Проблема с ответом модели: {', '.join(problems)}")
         if attempt < max_retries:
             print(f"    Повторяю запрос (попытка {attempt + 2}/{max_retries + 1})...")
 
     print(f"    [!!!] После {max_retries + 1} попыток остались проблемы - "
-          f"использую то, что получилось (недостающие кадры получат заглушку).")
+          f"использую то, что получилось (недостающие кадры получат заглушку, "
+          f"остальные проблемы смотри в журнале выше).")
     return result
 
 
