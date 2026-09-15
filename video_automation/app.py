@@ -150,7 +150,29 @@ class App(tk.Tk):
         paned.add(top_frame, weight=1)
         paned.add(log_frame, weight=1)
 
-        frame = top_frame
+        # Кнопок стало много, все сразу на экране могут не поместиться -
+        # верхняя часть теперь прокручиваемая (колесо мыши или полоса
+        # прокрутки справа), чтобы ничего не обрезалось и не пряталось.
+        top_canvas = tk.Canvas(top_frame, highlightthickness=0)
+        top_scrollbar = ttk.Scrollbar(top_frame, orient="vertical", command=top_canvas.yview)
+        scrollable_frame = ttk.Frame(top_canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: top_canvas.configure(scrollregion=top_canvas.bbox("all")))
+        canvas_window = top_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        top_canvas.configure(yscrollcommand=top_scrollbar.set)
+        top_canvas.bind("<Configure>", lambda e: top_canvas.itemconfig(canvas_window, width=e.width))
+
+        top_canvas.pack(side="left", fill="both", expand=True)
+        top_scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            top_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        top_canvas.bind("<Enter>", lambda e: top_canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        top_canvas.bind("<Leave>", lambda e: top_canvas.unbind_all("<MouseWheel>"))
+
+        frame = scrollable_frame
 
         # --- блок управления сервером ---
         server_frame = ttk.LabelFrame(frame, text="Сервер RunPod")
