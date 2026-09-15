@@ -28,9 +28,13 @@ from runpod_controller import get_latest_pod, resume_pod, stop_pod, wait_until_r
 from ssh_runner import connect, run_command, get_pod_ssh_connection, download_file, upload_file, upload_directory, download_matching_files, list_remote_dirs, list_remote_files, cancel_all_local_transfers
 from royaltechno_balance import get_royaltechno_balance
 from ssh_key_setup import ensure_key_installed
+from royaltechno_generate import generate_images, generate_videos_from_upscaled
 
 CONFIG_PATH = Path(__file__).resolve().parent / "video_automation_config.json"
 REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/automation"
+COMFYUI_INPUT_REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/input"
+COMFYUI_OUTPUT_REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/output"
+LOCAL_GENERATION_DIR = Path(__file__).resolve().parent / "local_generation"
 
 DEFAULT_CONFIG = {
     "runpod_api_key": "",
@@ -81,6 +85,9 @@ class App(tk.Tk):
         self.auto_shutdown_var = tk.BooleanVar(value=False)
         self.auto_shutdown_var.trace_add("write", lambda *a: self._update_auto_shutdown_label())
         self._shutdown_check_token = 0
+
+        # --- отмена локальной генерации через RoyalTechno (без RunPod) ---
+        self.local_gen_cancel_event = threading.Event()
 
         self._build_ui()
         self.after(100, self._poll_output_queue)
@@ -273,6 +280,25 @@ class App(tk.Tk):
 
         self.assemble_semaphore = threading.Semaphore(1)
         self.assemble_queue_blocks = set()
+
+        # --- генерация через RoyalTechno без RunPod (экономия) ---
+        economy_frame = ttk.LabelFrame(frame, text="Генерация через RoyalTechno без RunPod (экономия)")
+        economy_frame.pack(fill="x", padx=6, pady=6)
+        ttk.Label(economy_frame,
+                  text="Порядок: A (на компьютере, RunPod можно выключить) -> B (коротко включить "
+                       "RunPod для апскейла) -> C (на компьютере) -> D (снова коротко включить "
+                       "RunPod, залить готовое).",
+                  foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
+        econ_row = ttk.Frame(economy_frame)
+        econ_row.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(econ_row, text="A. Картинки без RunPod", command=self.on_generate_images_local,
+                   width=26).pack(side="left", padx=4)
+        ttk.Button(econ_row, text="B. Апскейл на RunPod", command=self.on_upscale_on_runpod,
+                   width=22).pack(side="left", padx=4)
+        ttk.Button(econ_row, text="C. Видео без RunPod", command=self.on_generate_videos_local,
+                   width=22).pack(side="left", padx=4)
+        ttk.Button(econ_row, text="D. Залить готовое на RunPod", command=self.on_upload_generated_to_runpod,
+                   width=28).pack(side="left", padx=4)
 
         # --- произвольная команда ---
         custom_frame = ttk.LabelFrame(frame, text="Своя команда (для гибкости)")
@@ -542,14 +568,20 @@ class App(tk.Tk):
     def on_stop_generation(self):
         if not messagebox.askyesno(
                 "Подтверждение",
-                "Принудительно остановить все скрипты генерации на сервере?\n"
+                "Принудительно остановить все скрипты генерации на сервере, а также "
+                "генерацию через RoyalTechno на этом компьютере (шаги A/C)?\n"
                 "Уже потраченные на текущий блок деньги не вернутся, но дальнейшая "
                 "генерация прекратится."):
             return
         self.run_in_background(self._stop_generation_task)
 
     def _stop_generation_task(self):
-        # сначала останавливаем локальные операции (скачивание/загрузку файлов) -
+        # останавливаем локальную генерацию через RoyalTechno (шаги A/C, без
+        # RunPod) - она крутится в текущем процессе, не как отдельный скрипт,
+        # поэтому убивается через флаг, а не через pkill
+        self.local_gen_cancel_event.set()
+
+        # локальные операции (скачивание/загрузку файлов) -
         # они выполняются на этом компьютере, серверный pkill их не видит
         local_stopped = cancel_all_local_transfers()
         if local_stopped:
@@ -561,6 +593,7 @@ class App(tk.Tk):
             "full_pipeline.py",
             "fix_and_renumber_pipeline.py",
             "generate_via_api_and_upscale.py",
+            "upscale_batch.py",
             "generate_object_library.py",
             "generate_thumbnails.py",
             "generate_csv_from_text.py",
@@ -1355,6 +1388,166 @@ class App(tk.Tk):
             if "✅" in status or "❌" in status:
                 self.assemble_tree.delete(csv_name)
                 self.assemble_queue_blocks.discard(csv_name)
+
+    # ---------------- генерация через RoyalTechno без RunPod (экономия) ----------------
+
+    def on_generate_images_local(self):
+        self.pick_remote_file_async(f"{REMOTE_DIR}/результаты", ".csv",
+                                     "Выбери CSV для генерации картинок (шаг A, без RunPod)",
+                                     self._on_generate_images_local_picked)
+
+    def _on_generate_images_local_picked(self, csv_name):
+        if not csv_name:
+            return
+        self.local_gen_cancel_event.clear()
+        self.run_in_background(self._generate_images_local_task, csv_name)
+
+    def _generate_images_local_task(self, csv_name):
+        block_name = csv_name[:-4] if csv_name.endswith(".csv") else csv_name
+        work_dir = LOCAL_GENERATION_DIR / block_name
+        raw_dir = work_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        local_csv = work_dir / csv_name
+        local_library = work_dir / "OBJECT_LIBRARY.md"
+
+        try:
+            client = self.get_ssh_client()
+        except Exception as e:
+            self.log(f"ОШИБКА подключения: {e}")
+            return
+
+        self.log(f"\n>>> Скачиваю {csv_name} и OBJECT_LIBRARY.md для локальной генерации...\n")
+        try:
+            download_file(client, f"{REMOTE_DIR}/результаты/{csv_name}", str(local_csv))
+            download_file(client, f"{REMOTE_DIR}/OBJECT_LIBRARY.md", str(local_library))
+        except Exception as e:
+            self.log(f"ОШИБКА скачивания CSV/библиотеки: {e}")
+            return
+
+        api_key = self.config_data.get("royaltechno_api_key")
+        if not api_key:
+            self.log("ОШИБКА: не задан RoyalTechno API-ключ (вкладка Настройки)")
+            return
+
+        self.log("\n>>> Файлы скачаны - дальше RunPod можно выключить, генерация идёт "
+                  "прямо на этом компьютере.\n")
+        self.log(f">>> Генерирую картинки (папка: {raw_dir})...\n")
+        generate_images(str(local_csv), str(local_library), str(raw_dir), api_key,
+                         log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set())
+
+    def on_upscale_on_runpod(self):
+        local_dir = filedialog.askdirectory(
+            title="Выбери папку сценария (внутри local_generation) для апскейла (шаг B)",
+            initialdir=str(LOCAL_GENERATION_DIR) if LOCAL_GENERATION_DIR.exists() else None)
+        if not local_dir:
+            return
+        self.run_in_background(self._upscale_on_runpod_task, Path(local_dir))
+
+    def _upscale_on_runpod_task(self, work_dir: Path):
+        raw_dir = work_dir / "raw"
+        upscaled_dir = work_dir / "upscaled"
+        upscaled_dir.mkdir(parents=True, exist_ok=True)
+
+        raw_files = [f for f in raw_dir.iterdir() if f.is_file()] if raw_dir.exists() else []
+        if not raw_files:
+            self.log(f"[!] В {raw_dir} нет сырых картинок - сначала выполни шаг A.")
+            return
+
+        try:
+            client = self.get_ssh_client()
+        except Exception as e:
+            self.log(f"ОШИБКА подключения: {e}")
+            return
+
+        self.log(f"\n>>> Загружаю {len(raw_files)} сырых картинок на RunPod...\n")
+        try:
+            upload_directory(client, str(raw_dir), COMFYUI_INPUT_REMOTE_DIR, on_output=self.log)
+        except Exception as e:
+            self.log(f"ОШИБКА загрузки: {e}")
+            return
+
+        self.log("\n>>> Запускаю апскейл на сервере (видеокарта нужна только для этого шага)...\n")
+        cmd = (f'python3 upscale_batch.py --input-dir "{COMFYUI_INPUT_REMOTE_DIR}" '
+               f'--output-dir "{COMFYUI_OUTPUT_REMOTE_DIR}"')
+        self.exec_remote(cmd)
+
+        self.log(f"\n>>> Скачиваю результаты апскейла в {upscaled_dir}...\n")
+        try:
+            prefixes = {f.stem.replace("_raw", "") for f in raw_files}
+            remote_files = list_remote_files(client, COMFYUI_OUTPUT_REMOTE_DIR, ".png")
+            matching = [f for f in remote_files if any(f.startswith(p + "_") for p in prefixes)]
+            for i, filename in enumerate(matching, 1):
+                self.log(f"  [{i}/{len(matching)}] {filename}...")
+                download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(upscaled_dir / filename))
+            self.log(f"\nГотово! Скачано апскейленных картинок: {len(matching)}. "
+                      f"Теперь можно выключить RunPod и перейти к шагу C.\n")
+        except Exception as e:
+            self.log(f"ОШИБКА скачивания результатов: {e}")
+
+    def on_generate_videos_local(self):
+        local_dir = filedialog.askdirectory(
+            title="Выбери папку сценария (внутри local_generation) для видео (шаг C, без RunPod)",
+            initialdir=str(LOCAL_GENERATION_DIR) if LOCAL_GENERATION_DIR.exists() else None)
+        if not local_dir:
+            return
+        self.local_gen_cancel_event.clear()
+        self.run_in_background(self._generate_videos_local_task, Path(local_dir))
+
+    def _generate_videos_local_task(self, work_dir: Path):
+        upscaled_dir = work_dir / "upscaled"
+        video_dir = work_dir / "video"
+        csv_matches = list(work_dir.glob("*.csv"))
+        if not csv_matches:
+            self.log(f"[!] В {work_dir} не найден CSV (он должен был скачаться на шаге A).")
+            return
+        local_csv = csv_matches[0]
+
+        api_key = self.config_data.get("royaltechno_api_key")
+        if not api_key:
+            self.log("ОШИБКА: не задан RoyalTechno API-ключ (вкладка Настройки)")
+            return
+
+        self.log(f"\n>>> Генерирую видео из апскейленных картинок (папка: {video_dir})...\n")
+        generate_videos_from_upscaled(str(local_csv), str(upscaled_dir), str(video_dir), api_key,
+                                       log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set())
+
+    def on_upload_generated_to_runpod(self):
+        local_dir = filedialog.askdirectory(
+            title="Выбери папку сценария (внутри local_generation) для заливки на RunPod (шаг D)",
+            initialdir=str(LOCAL_GENERATION_DIR) if LOCAL_GENERATION_DIR.exists() else None)
+        if not local_dir:
+            return
+        self.run_in_background(self._upload_generated_task, Path(local_dir))
+
+    def _upload_generated_task(self, work_dir: Path):
+        upscaled_dir = work_dir / "upscaled"
+        video_dir = work_dir / "video"
+
+        try:
+            client = self.get_ssh_client()
+        except Exception as e:
+            self.log(f"ОШИБКА подключения: {e}")
+            return
+
+        total = 0
+        if upscaled_dir.exists() and any(upscaled_dir.iterdir()):
+            self.log(f"\n>>> Заливаю апскейленные картинки из {upscaled_dir}...\n")
+            try:
+                total += upload_directory(client, str(upscaled_dir), COMFYUI_OUTPUT_REMOTE_DIR, on_output=self.log)
+            except Exception as e:
+                self.log(f"ОШИБКА загрузки картинок: {e}")
+                return
+
+        if video_dir.exists() and any(video_dir.iterdir()):
+            self.log(f"\n>>> Заливаю видео из {video_dir}...\n")
+            try:
+                total += upload_directory(client, str(video_dir), COMFYUI_OUTPUT_REMOTE_DIR, on_output=self.log)
+            except Exception as e:
+                self.log(f"ОШИБКА загрузки видео: {e}")
+                return
+
+        self.log(f"\nГотово! Залито файлов: {total}. Кнопки 11/12 теперь увидят эти "
+                  f"картинки/видео как обычно.\n")
 
     def on_custom_command(self):
         cmd = self.custom_cmd_var.get().strip()
