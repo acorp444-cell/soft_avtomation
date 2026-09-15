@@ -1399,10 +1399,27 @@ class App(tk.Tk):
     def _on_generate_images_local_picked(self, csv_name):
         if not csv_name:
             return
+        limit_text = self.ask_text_dialog(
+            "Сколько сцен обработать?",
+            "Для теста введи маленькое число (например 2) - обработаются только первые "
+            "N сцен из CSV. Когда всё проверено и работает, сотри число и оставь поле "
+            "пустым - тогда обработаются ВСЕ сцены.",
+            initial_value="2")
+        if limit_text is None:
+            return  # нажали "Отмена"
+        limit_text = limit_text.strip()
+        limit = None
+        if limit_text:
+            try:
+                limit = int(limit_text)
+            except ValueError:
+                messagebox.showwarning("Некорректное число",
+                                        "Нужно ввести целое число (например 2), или оставить поле пустым.")
+                return
         self.local_gen_cancel_event.clear()
-        self.run_in_background(self._generate_images_local_task, csv_name)
+        self.run_in_background(self._generate_images_local_task, csv_name, limit)
 
-    def _generate_images_local_task(self, csv_name):
+    def _generate_images_local_task(self, csv_name, limit=None):
         block_name = csv_name[:-4] if csv_name.endswith(".csv") else csv_name
         work_dir = LOCAL_GENERATION_DIR / block_name
         raw_dir = work_dir / "raw"
@@ -1433,7 +1450,7 @@ class App(tk.Tk):
                   "прямо на этом компьютере.\n")
         self.log(f">>> Генерирую картинки (папка: {raw_dir})...\n")
         generate_images(str(local_csv), str(local_library), str(raw_dir), api_key,
-                         log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set())
+                         log=self.log, limit=limit, should_stop=lambda: self.local_gen_cancel_event.is_set())
 
     def on_upscale_on_runpod(self):
         local_dir = filedialog.askdirectory(
