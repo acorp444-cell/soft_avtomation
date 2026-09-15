@@ -127,7 +127,7 @@ def parse_library(path):
     return library
 
 
-def expand_tags(prompt_text, ref_tags_field, library):
+def expand_tags(prompt_text, ref_tags_field, library, log=None):
     if not ref_tags_field or ref_tags_field.strip() in ("-", ""):
         return prompt_text
 
@@ -136,6 +136,10 @@ def expand_tags(prompt_text, ref_tags_field, library):
     for tag in tags:
         obj = library.get(tag)
         if not obj:
+            if log:
+                log(f"  [i] Тег '{tag}' не найден в OBJECT_LIBRARY.md - пропускаю "
+                    f"(нормально, если объект появляется в сценарии только 1 раз; "
+                    f"если появляется несколько раз - библиотеку стоит перегенерировать/дополнить)")
             continue
         piece = obj.get("description", "")
         if obj.get("mandatory"):
@@ -292,7 +296,7 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
                 skipped += 1
                 continue
 
-            full_prompt = expand_tags(base_prompt, ref_tags, library)
+            full_prompt = expand_tags(base_prompt, ref_tags, library, log=log)
             log(f"=== Сцена {num} ({which}) - запрос картинки в RoyalTechno...")
 
             try:

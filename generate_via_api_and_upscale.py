@@ -157,6 +157,10 @@ def expand_tags(prompt_text, ref_tags_field, library):
     for tag in tags:
         obj = library.get(tag)
         if not obj:
+            print(f"  [i] Тег '{tag}' не найден в OBJECT_LIBRARY.md - пропускаю "
+                  f"(если он должен там быть, но появляется только 1 раз в сценарии, "
+                  f"так и задумано; если появляется несколько раз - библиотеку стоит "
+                  f"перегенерировать/дополнить)")
             continue
         piece = obj.get("description", "")
         if obj.get("mandatory"):
