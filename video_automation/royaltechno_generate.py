@@ -50,6 +50,14 @@ POLL_TIMEOUT_SEC = 300
 MAX_RETRIES = 3
 RETRY_DELAY_SEC = 10
 
+# Тайм-ауты на сетевые запросы. Без них, если сервер RoyalTechno завис
+# или соединение оборвалось "молча" (без ошибки), urllib будет ждать
+# ответа БЕСКОНЕЧНО - задача не завершится и не покажет ошибку, просто
+# зависнет навсегда. С тайм-аутом зависание превращается в обычную
+# ошибку, на которую сработает повторная попытка (retry).
+REQUEST_TIMEOUT_SEC = 60
+DOWNLOAD_TIMEOUT_SEC = 180
+
 # Сколько сцен генерировать одновременно - по умолчанию 3, как позволяет
 # обычный тариф RoyalTechno (столько же потоков было в старой очереди
 # генерации через RunPod, кнопка 4). Если тариф уже, поменяй значение.
@@ -181,11 +189,15 @@ def _api_request(method, path, api_key, payload=None):
         },
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"Ошибка RoyalTechno API {e.code}: {body}") from e
+    except TimeoutError as e:
+        raise RuntimeError(
+            f"RoyalTechno не ответил за {REQUEST_TIMEOUT_SEC} сек ({method} {path}) - "
+            f"сервер завис или проблема с сетью") from e
 
 
 def submit_image_job(prompt, api_key):
@@ -252,8 +264,12 @@ def _submit_and_wait_with_retries(submit_fn, api_key, log, label):
 
 def download_url(url, save_path):
     req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0.0"})
-    with urllib.request.urlopen(req) as resp:
-        data = resp.read()
+    try:
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SEC) as resp:
+            data = resp.read()
+    except TimeoutError as e:
+        raise RuntimeError(
+            f"Скачивание не ответило за {DOWNLOAD_TIMEOUT_SEC} сек: {url}") from e
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     with open(save_path, "wb") as f:
         f.write(data)
