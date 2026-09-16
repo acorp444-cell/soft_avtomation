@@ -31,6 +31,7 @@ from ssh_runner import connect, run_command, get_pod_ssh_connection, download_fi
 from royaltechno_balance import get_royaltechno_balance
 from ssh_key_setup import ensure_key_installed
 from royaltechno_generate import generate_images, generate_videos_from_upscaled
+from clean_subtitles import clean_subtitles_text
 
 CONFIG_PATH = Path(__file__).resolve().parent / "video_automation_config.json"
 REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/automation"
@@ -117,7 +118,14 @@ class App(tk.Tk):
         menu.add_command(label="Копировать", command=lambda: entry_widget.event_generate("<<Copy>>"))
         menu.add_command(label="Вставить", command=lambda: entry_widget.event_generate("<<Paste>>"))
         menu.add_separator()
-        menu.add_command(label="Выделить всё", command=lambda: entry_widget.select_range(0, "end"))
+
+        def select_all():
+            if isinstance(entry_widget, tk.Text):
+                entry_widget.tag_add("sel", "1.0", "end")
+            else:
+                entry_widget.select_range(0, "end")
+
+        menu.add_command(label="Выделить всё", command=select_all)
 
         def show_menu(event):
             menu.tk_popup(event.x_root, event.y_root)
@@ -329,6 +337,20 @@ class App(tk.Tk):
                    width=28).pack(side="left", padx=4)
         ttk.Button(econ_row, text="12. Сборка видео без RunPod", command=self.on_assemble_video_local,
                    width=28).pack(side="left", padx=4)
+
+        # --- очистка субтитров с YouTube (без RunPod) ---
+        subs_frame = ttk.LabelFrame(frame, text="Исправление субтитров с YouTube (без RunPod)")
+        subs_frame.pack(fill="x", padx=6, pady=6)
+        ttk.Label(subs_frame,
+                  text="Вставь сюда скопированный с YouTube черновой текст субтитров (с ошибками, "
+                       "без пунктуации, возможно с таймкодами - они уберутся сами). Программа вернёт "
+                       "сплошной текст с исправленной грамматикой и пунктуацией, без RunPod.",
+                  foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
+        self.subs_input_text = tk.Text(subs_frame, height=6, wrap="word")
+        self.subs_input_text.pack(fill="x", padx=6, pady=(0, 6))
+        self._add_context_menu(self.subs_input_text)
+        ttk.Button(subs_frame, text="Исправить текст и сохранить в файл",
+                   command=self.on_clean_subtitles).pack(anchor="w", padx=6, pady=(0, 6))
 
         # --- произвольная команда ---
         custom_frame = ttk.LabelFrame(frame, text="Своя команда (для гибкости)")
@@ -1820,6 +1842,49 @@ class App(tk.Tk):
             self.log(f"\n[!] Сборка не завершилась успешно (код {exit_code}). Смотри "
                       f"текст ошибки выше. Если написано, что не найден 'ffmpeg' или "
                       f"'ffprobe' - их нужно установить на этот компьютер и добавить в PATH.\n")
+
+    def on_clean_subtitles(self):
+        raw_text = self.subs_input_text.get("1.0", "end").strip()
+        if not raw_text:
+            messagebox.showwarning("Пусто", "Сначала вставь текст субтитров в поле выше.")
+            return
+
+        api_key = self.config_data.get("openai_api_key")
+        if not api_key:
+            self.log("ОШИБКА: не задан OpenAI API-ключ (вкладка Настройки)")
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            title="Куда сохранить исправленный текст",
+            defaultextension=".txt",
+            filetypes=[("Текстовый файл", "*.txt")],
+            initialfile="субтитры_исправлено.txt",
+            initialdir=str(LOCAL_GENERATION_DIR) if LOCAL_GENERATION_DIR.exists() else None)
+        if not save_path:
+            return
+
+        self.run_in_background(self._clean_subtitles_task, raw_text, save_path)
+
+    def _clean_subtitles_task(self, raw_text, save_path):
+        model = self.config_data.get("openai_model") or "gpt-4o"
+        api_key = self.config_data.get("openai_api_key")
+        api_base = self.config_data.get("openai_base_url") or "https://api.openai.com/v1"
+
+        self.log("\n>>> Исправляю текст субтитров через OpenAI (без RunPod)...\n")
+        try:
+            cleaned = clean_subtitles_text(raw_text, api_key, model=model, api_base=api_base, log=self.log)
+        except Exception as e:
+            self.log(f"ОШИБКА: {e}")
+            return
+
+        try:
+            with open(save_path, "w", encoding="utf-8") as f:
+                f.write(cleaned)
+        except Exception as e:
+            self.log(f"ОШИБКА сохранения файла: {e}")
+            return
+
+        self.log(f"\nГотово! Исправленный текст сохранён: {save_path}\n")
 
     def on_custom_command(self):
         cmd = self.custom_cmd_var.get().strip()
