@@ -24,7 +24,10 @@ import tempfile
 
 DEFAULT_API_BASE = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-5.1"
-REQUEST_TIMEOUT_SEC = 180
+# Большой текст субтитров (тысячи слов) даёт такой же большой ответ на
+# выходе - модели требуется время, чтобы его сгенерировать. 3 минут может
+# не хватить для действительно длинных текстов, поэтому запас побольше.
+REQUEST_TIMEOUT_SEC = 600
 
 TIMESTAMP_LINE_RE = re.compile(r'^\s*\d{1,2}(:\d{2}){1,2}\s*$')
 

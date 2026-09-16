@@ -346,8 +346,13 @@ class App(tk.Tk):
                        "без пунктуации, возможно с таймкодами - они уберутся сами). Программа вернёт "
                        "сплошной текст с исправленной грамматикой и пунктуацией, без RunPod.",
                   foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
-        self.subs_input_text = tk.Text(subs_frame, height=6, wrap="word")
-        self.subs_input_text.pack(fill="x", padx=6, pady=(0, 6))
+        subs_text_frame = ttk.Frame(subs_frame)
+        subs_text_frame.pack(fill="x", padx=6, pady=(0, 6))
+        self.subs_input_text = tk.Text(subs_text_frame, height=8, wrap="word")
+        self.subs_input_text.pack(side="left", fill="both", expand=True)
+        subs_scrollbar = ttk.Scrollbar(subs_text_frame, command=self.subs_input_text.yview)
+        subs_scrollbar.pack(side="right", fill="y")
+        self.subs_input_text.configure(yscrollcommand=subs_scrollbar.set)
         self._add_context_menu(self.subs_input_text)
         ttk.Button(subs_frame, text="Исправить текст и сохранить в файл",
                    command=self.on_clean_subtitles).pack(anchor="w", padx=6, pady=(0, 6))
