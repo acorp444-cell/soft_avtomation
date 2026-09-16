@@ -29,9 +29,11 @@ import io
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 API_BASE = "https://api.royaltechno.cc/v1"
@@ -47,6 +49,11 @@ POLL_EVERY_SEC = 3
 POLL_TIMEOUT_SEC = 300
 MAX_RETRIES = 3
 RETRY_DELAY_SEC = 10
+
+# Сколько сцен генерировать одновременно - по умолчанию 3, как позволяет
+# обычный тариф RoyalTechno (столько же потоков было в старой очереди
+# генерации через RunPod, кнопка 4). Если тариф уже, поменяй значение.
+DEFAULT_MAX_PARALLEL = 3
 
 # Лимит RoyalTechno на инлайн-картинку (data URI) - 5 МиБ после
 # раскодирования. Апскейленный PNG (2048x1152) легко может быть тяжелее,
@@ -252,16 +259,32 @@ def download_url(url, save_path):
         f.write(data)
 
 
+def _run_tasks_parallel(tasks, worker_fn, max_parallel, log):
+    """Выполняет worker_fn(task) для каждой задачи из tasks, до max_parallel
+    штук одновременно (как очередь в 3 потока, которая раньше была у
+    кнопки 4 через RunPod). worker_fn сам решает, что считать "готово/
+    пропущено/ошибка" и пишет об этом в log - здесь только параллельный
+    запуск, без подсчёта результатов."""
+    if not tasks:
+        return
+    log(f"[i] Запускаю с параллелизмом {max_parallel} "
+        f"(как позволяет тариф RoyalTechno)...")
+    with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        list(executor.map(worker_fn, tasks))
+
+
 # ---------------------------------------------------------------------------
 # ШАГ 1: ГЕНЕРАЦИЯ СЫРЫХ КАРТИНОК (без RunPod)
 # ---------------------------------------------------------------------------
 
 def generate_images(csv_path, library_path, output_dir, api_key, log=print,
-                     limit=None, should_stop=None):
+                     limit=None, should_stop=None, max_parallel=DEFAULT_MAX_PARALLEL):
     """Для каждой сцены в CSV отправляет img_prompt_1 и img_prompt_2 в
     RoyalTechno, скачивает сырые (не апскейленные) картинки в output_dir
     с именами {num}_{which}_raw.jpg - такое же имя, которое ожидает
-    апскейл на RunPod. Уже готовые файлы не перегенерируются.
+    апскейл на RunPod. Уже готовые файлы не перегенерируются. До
+    max_parallel сцен обрабатываются одновременно (по умолчанию 3, как
+    позволяет обычный тариф RoyalTechno).
 
     should_stop - необязательная функция без аргументов, возвращающая
     True, если нужно прервать процесс (для кнопки отмены)."""
@@ -275,45 +298,54 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
 
     os.makedirs(output_dir, exist_ok=True)
 
-    done, skipped, failed = 0, 0, 0
-    for row in rows:
-        if should_stop and should_stop():
-            log("[!] Остановлено пользователем.")
-            break
+    counters = {"done": 0, "skipped": 0, "failed": 0}
+    counters_lock = threading.Lock()
 
+    tasks = []
+    for row in rows:
         num = row.get("num", "").strip()
         if not num:
             continue
         ref_tags = row.get("ref_tags", "").strip()
-
         for which, col in (("img1", "img_prompt_1"), ("img2", "img_prompt_2")):
             base_prompt = row.get(col, "").strip()
             if not base_prompt or base_prompt == "-":
                 continue
-
             raw_path = os.path.join(output_dir, f"{num}_{which}_raw.jpg")
-            if os.path.exists(raw_path):
-                skipped += 1
-                continue
+            tasks.append((num, which, base_prompt, ref_tags, raw_path))
 
-            full_prompt = expand_tags(base_prompt, ref_tags, library, log=log)
-            log(f"=== Сцена {num} ({which}) - запрос картинки в RoyalTechno...")
+    def process_one(task):
+        num, which, base_prompt, ref_tags, raw_path = task
+        if should_stop and should_stop():
+            return
+        if os.path.exists(raw_path):
+            with counters_lock:
+                counters["skipped"] += 1
+            return
 
-            try:
-                result = _submit_and_wait_with_retries(
-                    lambda: submit_image_job(full_prompt, api_key),
-                    api_key, log, f"картинка {num}/{which}",
-                )
-                image_url = result["output"]["url"]
-                cost = result.get("cost_usd_cents", 0)
-                download_url(image_url, raw_path)
-                log(f"  [+] Готово, стоимость {cost} центов, сохранено: {raw_path}")
-                done += 1
-            except Exception as e:
-                log(f"  [!!!] Сцена {num} ({which}): не удалось сгенерировать картинку: {e}")
-                failed += 1
+        full_prompt = expand_tags(base_prompt, ref_tags, library, log=log)
+        log(f"=== Сцена {num} ({which}) - запрос картинки в RoyalTechno...")
+        try:
+            result = _submit_and_wait_with_retries(
+                lambda: submit_image_job(full_prompt, api_key),
+                api_key, log, f"картинка {num}/{which}",
+            )
+            image_url = result["output"]["url"]
+            cost = result.get("cost_usd_cents", 0)
+            download_url(image_url, raw_path)
+            log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
+                f"сохранено: {raw_path}")
+            with counters_lock:
+                counters["done"] += 1
+        except Exception as e:
+            log(f"  [!!!] Сцена {num} ({which}): не удалось сгенерировать картинку: {e}")
+            with counters_lock:
+                counters["failed"] += 1
 
-    log(f"\nГотово! Сгенерировано: {done}, уже было готово: {skipped}, ошибок: {failed}")
+    _run_tasks_parallel(tasks, process_one, max_parallel, log)
+
+    log(f"\nГотово! Сгенерировано: {counters['done']}, уже было готово: {counters['skipped']}, "
+        f"ошибок: {counters['failed']}")
 
 
 # ---------------------------------------------------------------------------
@@ -365,55 +397,67 @@ def _image_to_data_uri(image_path):
 
 
 def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
-                                   log=print, should_stop=None):
+                                   log=print, should_stop=None, max_parallel=DEFAULT_MAX_PARALLEL):
     """Для каждой сцены с animate=TRUE берёт уже апскейленную картинку
     (из upscaled_dir, скачанную с RunPod после апскейла), отправляет её
     в RoyalTechno/Veo как инлайн-картинку (без отдельной загрузки куда-
     либо) и скачивает готовое видео в output_dir с именем
     {num}_{which}_video.mp4 - таким же, какое ожидает финальная сборка
-    видео (кнопка 12)."""
+    видео (кнопка 12). До max_parallel сцен обрабатываются одновременно."""
     rows = read_rows(csv_path)
     os.makedirs(output_dir, exist_ok=True)
 
-    done, skipped, failed = 0, 0, 0
-    for row in rows:
-        if should_stop and should_stop():
-            log("[!] Остановлено пользователем.")
-            break
+    counters = {"done": 0, "skipped": 0, "failed": 0}
+    counters_lock = threading.Lock()
 
+    tasks = []
+    for row in rows:
         num = row.get("num", "").strip()
         animate_flag = row.get("animate", "").strip().upper()
         video_prompt = row.get("video_prompt", "").strip()
         if not num or animate_flag != "TRUE" or not video_prompt:
             continue
-
         for which in ("img1", "img2"):
             video_path = os.path.join(output_dir, f"{num}_{which}_video.mp4")
-            if os.path.exists(video_path):
-                skipped += 1
-                continue
+            tasks.append((num, which, video_prompt, video_path))
 
-            upscaled_path = _find_upscaled_image(upscaled_dir, num, which)
-            if not upscaled_path:
-                log(f"  [!] Сцена {num} ({which}): нет апскейленной картинки в {upscaled_dir}, "
-                    f"пропускаю (сначала нужен апскейл на RunPod)")
-                failed += 1
-                continue
+    def process_one(task):
+        num, which, video_prompt, video_path = task
+        if should_stop and should_stop():
+            return
+        if os.path.exists(video_path):
+            with counters_lock:
+                counters["skipped"] += 1
+            return
 
-            log(f"=== Сцена {num} ({which}) - оживляю {os.path.basename(upscaled_path)}...")
-            try:
-                data_uri = _image_to_data_uri(upscaled_path)
-                result = _submit_and_wait_with_retries(
-                    lambda: submit_video_job(video_prompt, data_uri, api_key),
-                    api_key, log, f"видео {num}/{which}",
-                )
-                video_url = result["output"]["url"]
-                cost = result.get("cost_usd_cents", 0)
-                download_url(video_url, video_path)
-                log(f"  [+] Готово, стоимость {cost} центов, сохранено: {video_path}")
-                done += 1
-            except Exception as e:
-                log(f"  [!!!] Сцена {num} ({which}): не удалось сгенерировать видео: {e}")
-                failed += 1
+        upscaled_path = _find_upscaled_image(upscaled_dir, num, which)
+        if not upscaled_path:
+            log(f"  [!] Сцена {num} ({which}): нет апскейленной картинки в {upscaled_dir}, "
+                f"пропускаю (сначала нужен апскейл на RunPod)")
+            with counters_lock:
+                counters["failed"] += 1
+            return
 
-    log(f"\nГотово! Сгенерировано видео: {done}, уже было готово: {skipped}, ошибок: {failed}")
+        log(f"=== Сцена {num} ({which}) - оживляю {os.path.basename(upscaled_path)}...")
+        try:
+            data_uri = _image_to_data_uri(upscaled_path)
+            result = _submit_and_wait_with_retries(
+                lambda: submit_video_job(video_prompt, data_uri, api_key),
+                api_key, log, f"видео {num}/{which}",
+            )
+            video_url = result["output"]["url"]
+            cost = result.get("cost_usd_cents", 0)
+            download_url(video_url, video_path)
+            log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
+                f"сохранено: {video_path}")
+            with counters_lock:
+                counters["done"] += 1
+        except Exception as e:
+            log(f"  [!!!] Сцена {num} ({which}): не удалось сгенерировать видео: {e}")
+            with counters_lock:
+                counters["failed"] += 1
+
+    _run_tasks_parallel(tasks, process_one, max_parallel, log)
+
+    log(f"\nГотово! Сгенерировано видео: {counters['done']}, уже было готово: {counters['skipped']}, "
+        f"ошибок: {counters['failed']}")

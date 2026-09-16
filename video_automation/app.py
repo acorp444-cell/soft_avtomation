@@ -44,6 +44,7 @@ DEFAULT_CONFIG = {
     "openai_model": "gpt-4o",
     "lumean_api_key": "",
     "royaltechno_api_key": "",
+    "royaltechno_max_parallel": "3",
     "lumean_template_id": "01a00ab2-3a8a-716c-b0f5-e205530b39d3",
 }
 
@@ -357,6 +358,7 @@ class App(tk.Tk):
             ("lumean_api_key", "Lumean API-ключ (озвучка)"),
             ("lumean_template_id", "Lumean template_id (голос)"),
             ("royaltechno_api_key", "RoyalTechno API-ключ (картинки/видео)"),
+            ("royaltechno_max_parallel", "RoyalTechno: сколько сцен генерировать одновременно (по тарифу)"),
         ]
         for key, label in fields:
             row = ttk.Frame(frame)
@@ -730,6 +732,14 @@ class App(tk.Tk):
                                                       "в поле 'Название сценария' сверху.")
             return None
         return blocks_dir
+
+    def get_royaltechno_max_parallel(self) -> int:
+        raw = str(self.config_data.get("royaltechno_max_parallel", "3")).strip()
+        try:
+            value = int(raw)
+            return value if value > 0 else 3
+        except ValueError:
+            return 3
 
     def on_generate_library(self):
         blocks_dir = self.get_blocks_dir_or_warn()
@@ -1515,7 +1525,8 @@ class App(tk.Tk):
                   "прямо на этом компьютере.\n")
         self.log(f">>> Генерирую картинки (папка: {raw_dir})...\n")
         generate_images(str(local_csv), str(local_library), str(raw_dir), api_key,
-                         log=self.log, limit=limit, should_stop=lambda: self.local_gen_cancel_event.is_set())
+                         log=self.log, limit=limit, should_stop=lambda: self.local_gen_cancel_event.is_set(),
+                         max_parallel=self.get_royaltechno_max_parallel())
 
     def on_upscale_on_runpod(self):
         local_dir = filedialog.askdirectory(
@@ -1591,7 +1602,8 @@ class App(tk.Tk):
 
         self.log(f"\n>>> Генерирую видео из апскейленных картинок (папка: {video_dir})...\n")
         generate_videos_from_upscaled(str(local_csv), str(upscaled_dir), str(video_dir), api_key,
-                                       log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set())
+                                       log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set(),
+                                       max_parallel=self.get_royaltechno_max_parallel())
 
     def on_upload_generated_to_runpod(self):
         local_dir = filedialog.askdirectory(
