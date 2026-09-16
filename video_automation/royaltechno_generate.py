@@ -29,20 +29,12 @@ import io
 import json
 import os
 import re
+import subprocess
+import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-# Обычный браузерный User-Agent - вместо "curl/8.0.0", который некоторые
-# сайты (в т.ч. защита от ботов на CDN) режут/обрывают, хотя тот же самый
-# запрос из настоящего браузера проходит без проблем.
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
 
 API_BASE = "https://api.royaltechno.cc/v1"
 IMAGE_MODEL = "nano-banana-2"
@@ -59,7 +51,7 @@ MAX_RETRIES = 3
 RETRY_DELAY_SEC = 10
 
 # Тайм-ауты на сетевые запросы. Без них, если сервер RoyalTechno завис
-# или соединение оборвалось "молча" (без ошибки), urllib будет ждать
+# или соединение оборвалось "молча" (без ошибки), curl будет ждать
 # ответа БЕСКОНЕЧНО - задача не завершится и не покажет ошибку, просто
 # зависнет навсегда. С тайм-аутом зависание превращается в обычную
 # ошибку, на которую сработает повторная попытка (retry).
@@ -185,27 +177,63 @@ def read_rows(csv_path):
 # ROYALTECHNO API
 # ---------------------------------------------------------------------------
 
+def _run_curl(cmd, timeout_sec, what):
+    """Запускает curl как отдельную программу (вместо встроенного в Python
+    механизма HTTPS-запросов) и возвращает завершённый процесс. На части
+    компьютеров (Windows) встроенный в Python способ подключения по HTTPS
+    почему-то обрывается сервером RoyalTechno (Cloudflare), хотя ТОЧНО
+    ТАКОЙ ЖЕ запрос через curl проходит без проблем - поэтому вместо
+    "изобретения" своего HTTPS-подключения программа просто пользуется
+    curl, который есть в Windows 10/11 "из коробки"."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec + 10)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"{what} не ответил за {timeout_sec} сек") from e
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "Не найдена программа 'curl' на этом компьютере (обычно она уже "
+            "встроена в Windows 10/11 - проверь командой 'curl -version' в "
+            "командной строке)") from e
+
+
 def _api_request(method, path, api_key, payload=None):
     url = f"{API_BASE}{path}"
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(
-        url, data=data, method=method,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": BROWSER_USER_AGENT,
-        },
-    )
+    cmd = ["curl", "-s", "-X", method, url,
+           "--max-time", str(REQUEST_TIMEOUT_SEC),
+           "-H", f"Authorization: Bearer {api_key}",
+           "-H", "Content-Type: application/json",
+           "-w", "\n%{http_code}"]
+
+    tmp_path = None
+    if payload is not None:
+        # передаём тело запроса через временный файл, а не прямо в команду -
+        # у base64-картинок в видео-запросах тело может весить мегабайты,
+        # а это больше, чем разрешено передавать одним аргументом команды
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump(payload, tmp)
+            tmp_path = tmp.name
+        cmd += ["-d", f"@{tmp_path}"]
+
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Ошибка RoyalTechno API {e.code}: {body}") from e
-    except TimeoutError as e:
-        raise RuntimeError(
-            f"RoyalTechno не ответил за {REQUEST_TIMEOUT_SEC} сек ({method} {path}) - "
-            f"сервер завис или проблема с сетью") from e
+        result = _run_curl(cmd, REQUEST_TIMEOUT_SEC, f"RoyalTechno ({method} {path})")
+    finally:
+        if tmp_path:
+            os.unlink(tmp_path)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"curl не смог связаться с RoyalTechno (код {result.returncode}): "
+                            f"{result.stderr.strip()[-500:]}")
+
+    body, _, status_code = result.stdout.rpartition("\n")
+    try:
+        status = int(status_code)
+    except ValueError:
+        raise RuntimeError(f"Не удалось разобрать ответ RoyalTechno: {result.stdout[:500]}")
+
+    if status >= 400:
+        raise RuntimeError(f"Ошибка RoyalTechno API {status}: {body}")
+
+    return json.loads(body)
 
 
 def submit_image_job(prompt, api_key):
@@ -271,16 +299,12 @@ def _submit_and_wait_with_retries(submit_fn, api_key, log, label):
 
 
 def download_url(url, save_path):
-    req = urllib.request.Request(url, headers={"User-Agent": BROWSER_USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SEC) as resp:
-            data = resp.read()
-    except TimeoutError as e:
-        raise RuntimeError(
-            f"Скачивание не ответило за {DOWNLOAD_TIMEOUT_SEC} сек: {url}") from e
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(save_path, "wb") as f:
-        f.write(data)
+    cmd = ["curl", "-s", "-L", "--max-time", str(DOWNLOAD_TIMEOUT_SEC), "-o", str(save_path), url]
+    result = _run_curl(cmd, DOWNLOAD_TIMEOUT_SEC, "Скачивание")
+    if result.returncode != 0:
+        raise RuntimeError(f"curl не смог скачать файл (код {result.returncode}): "
+                            f"{result.stderr.strip()[-500:]}")
 
 
 def _run_tasks_parallel(tasks, worker_fn, max_parallel, log):

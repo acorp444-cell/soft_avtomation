@@ -3,32 +3,47 @@
 """
 
 import json
-import urllib.error
-import urllib.request
-
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+import subprocess
 
 API_BASE = "https://api.royaltechno.cc/v1"
+REQUEST_TIMEOUT_SEC = 15
 
 
 def get_royaltechno_balance(api_key: str):
     """Возвращает баланс аккаунта RoyalTechno. Возвращает None, если
-    эндпоинт недоступен или формат ответа отличается от ожидаемого."""
-    req = urllib.request.Request(
-        f"{API_BASE}/account",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "User-Agent": BROWSER_USER_AGENT,
-        },
-    )
+    эндпоинт недоступен или формат ответа отличается от ожидаемого.
+
+    Запрос идёт через curl (а не через встроенный в Python механизм
+    HTTPS-запросов) - на части компьютеров (Windows) Python-подключение
+    почему-то обрывается сервером RoyalTechno (Cloudflare), хотя точно
+    такой же запрос через curl проходит без проблем."""
+    cmd = ["curl", "-s", "-X", "GET", f"{API_BASE}/account",
+           "--max-time", str(REQUEST_TIMEOUT_SEC),
+           "-H", f"Authorization: Bearer {api_key}",
+           "-w", "\n%{http_code}"]
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Ошибка RoyalTechno API {e.code}: {e.read().decode('utf-8', errors='ignore')}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=REQUEST_TIMEOUT_SEC + 10)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"RoyalTechno не ответил за {REQUEST_TIMEOUT_SEC} сек") from e
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "Не найдена программа 'curl' на этом компьютере (обычно она уже "
+            "встроена в Windows 10/11)") from e
+
+    if result.returncode != 0:
+        raise RuntimeError(f"curl не смог связаться с RoyalTechno (код {result.returncode}): "
+                            f"{result.stderr.strip()[-500:]}")
+
+    body, _, status_code = result.stdout.rpartition("\n")
+    try:
+        status = int(status_code)
+    except ValueError:
+        raise RuntimeError(f"Не удалось разобрать ответ RoyalTechno: {result.stdout[:500]}")
+
+    if status >= 400:
+        raise RuntimeError(f"Ошибка RoyalTechno API {status}: {body}")
+
+    data = json.loads(body)
 
     # Пробуем несколько вероятных названий поля с балансом
     for key in ("balance", "balance_usd", "credit", "credits", "balance_usd_cents"):
