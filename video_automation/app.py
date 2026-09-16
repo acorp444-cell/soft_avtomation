@@ -226,6 +226,7 @@ class App(tk.Tk):
             ("4. Картинки + видео", self.on_generate_media),
             ("5. Превью (текст)", self.on_thumbnails_dry),
             ("5б. Превью (картинки)", self.on_thumbnails_run),
+            ("5в. Музыка (промт для Suno)", self.on_generate_music),
             ("6. Собрать архив на сервере", self.on_pack_output),
             ("7. Скачать результаты (архив)", self.on_download_output),
             ("8. Скачать один CSV", self.on_download_one_csv),
@@ -618,6 +619,7 @@ class App(tk.Tk):
             "upscale_batch.py",
             "generate_object_library.py",
             "generate_thumbnails.py",
+            "generate_music_prompt.py",
             "generate_csv_from_text.py",
             "split_audio_by_csv.py",
             "assemble_block_video.py",
@@ -786,6 +788,14 @@ class App(tk.Tk):
         cmd = (f'python3 generate_thumbnails.py --blocks-dir "{blocks_dir}" '
                f'--library OBJECT_LIBRARY.md --titles-master MASTER_ПРОМТ_THUMBNAIL_TITLES.txt '
                f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir превью --run')
+        self.run_in_background(self.exec_remote, cmd)
+
+    def on_generate_music(self):
+        blocks_dir = self.get_blocks_dir_or_warn()
+        if not blocks_dir:
+            return
+        cmd = (f'python3 generate_music_prompt.py --blocks-dir "{blocks_dir}" '
+               f'--master MASTER_ПРОМТ_MUSIC.txt --output-dir превью')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_refresh_balance(self):
