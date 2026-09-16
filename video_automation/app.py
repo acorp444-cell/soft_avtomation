@@ -1470,14 +1470,17 @@ class App(tk.Tk):
         local_folders = self._list_local_scenario_folders()
         if local_folders:
             names = "\n".join(f"- {d.name}" for d in local_folders)
-            use_existing = messagebox.askyesno(
+            use_existing = messagebox.askyesnocancel(
                 "Использовать уже скачанное?",
                 "На компьютере уже есть скачанные файлы сценария (CSV + библиотека):\n"
                 + names +
                 "\n\nИспользовать их СЕЙЧАС, БЕЗ подключения к RunPod?\n\n"
                 "Да - работать с уже скачанными файлами (RunPod включать не нужно).\n"
                 "Нет - выбрать/скачать другой сценарий с RunPod "
-                "(для этого RunPod должен быть включён).")
+                "(для этого RunPod должен быть включён).\n"
+                "Отмена - ничего не делать, закрыть это окно.")
+            if use_existing is None:
+                return
             if use_existing:
                 if len(local_folders) == 1:
                     work_dir = local_folders[0]
