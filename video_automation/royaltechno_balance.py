@@ -6,6 +6,11 @@ import json
 import urllib.error
 import urllib.request
 
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 API_BASE = "https://api.royaltechno.cc/v1"
 
 
@@ -16,7 +21,7 @@ def get_royaltechno_balance(api_key: str):
         f"{API_BASE}/account",
         headers={
             "Authorization": f"Bearer {api_key}",
-            "User-Agent": "curl/8.0.0",
+            "User-Agent": BROWSER_USER_AGENT,
         },
     )
     try:

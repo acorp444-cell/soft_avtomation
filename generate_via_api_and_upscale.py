@@ -57,6 +57,15 @@ COMFYUI_URL = "http://127.0.0.1:8188"
 COMFYUI_INPUT_DIR = os.path.join(BASE_DIR, "..", "input")   # ComfyUI/input
 COMFYUI_OUTPUT_DIR = os.path.join(BASE_DIR, "..", "output")  # ComfyUI/output
 
+# Обычный браузерный User-Agent - "curl/8.0.0" некоторые CDN/защита от
+# ботов режут/обрывают, хотя тот же запрос из настоящего браузера проходит.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+REQUEST_TIMEOUT_SEC = 60
+DOWNLOAD_TIMEOUT_SEC = 180
+
 # RoyalTechno API
 API_BASE = "https://api.royaltechno.cc/v1"
 IMAGE_MODEL = "nano-banana-2"
@@ -196,15 +205,19 @@ def _api_request(method, path, payload=None):
         headers={
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
-            "User-Agent": "curl/8.0.0",
+            "User-Agent": BROWSER_USER_AGENT,
         },
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"Ошибка API {e.code}: {body}") from e
+    except TimeoutError as e:
+        raise RuntimeError(
+            f"RoyalTechno не ответил за {REQUEST_TIMEOUT_SEC} сек ({method} {path}) - "
+            f"сервер завис или проблема с сетью") from e
 
 
 def submit_image_job(prompt):
@@ -259,9 +272,12 @@ def wait_for_job(job_id):
 
 
 def download_image(url, save_path):
-    req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0.0"})
-    with urllib.request.urlopen(req) as resp:
-        data = resp.read()
+    req = urllib.request.Request(url, headers={"User-Agent": BROWSER_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SEC) as resp:
+            data = resp.read()
+    except TimeoutError as e:
+        raise RuntimeError(f"Скачивание не ответило за {DOWNLOAD_TIMEOUT_SEC} сек: {url}") from e
     with open(save_path, "wb") as f:
         f.write(data)
 
@@ -331,9 +347,13 @@ def process_scene(num, which, full_prompt, row, upscale_template):
 
             video_filename = f"{num}_{which}_video.mp4"
             video_path = os.path.join(COMFYUI_OUTPUT_DIR, video_filename)
-            req = urllib.request.Request(video_url, headers={"User-Agent": "curl/8.0.0"})
-            with urllib.request.urlopen(req) as resp:
-                video_data = resp.read()
+            req = urllib.request.Request(video_url, headers={"User-Agent": BROWSER_USER_AGENT})
+            try:
+                with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SEC) as resp:
+                    video_data = resp.read()
+            except TimeoutError as e:
+                raise RuntimeError(
+                    f"Скачивание видео не ответило за {DOWNLOAD_TIMEOUT_SEC} сек: {video_url}") from e
             with open(video_path, "wb") as f:
                 f.write(video_data)
             print(f"[+] Видео сохранено: {video_path}")

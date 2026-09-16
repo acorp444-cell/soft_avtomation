@@ -36,6 +36,14 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+# Обычный браузерный User-Agent - вместо "curl/8.0.0", который некоторые
+# сайты (в т.ч. защита от ботов на CDN) режут/обрывают, хотя тот же самый
+# запрос из настоящего браузера проходит без проблем.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 API_BASE = "https://api.royaltechno.cc/v1"
 IMAGE_MODEL = "nano-banana-2"
 IMAGE_QUALITY = "auto"
@@ -185,7 +193,7 @@ def _api_request(method, path, api_key, payload=None):
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "curl/8.0.0",
+            "User-Agent": BROWSER_USER_AGENT,
         },
     )
     try:
@@ -263,7 +271,7 @@ def _submit_and_wait_with_retries(submit_fn, api_key, log, label):
 
 
 def download_url(url, save_path):
-    req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": BROWSER_USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SEC) as resp:
             data = resp.read()
