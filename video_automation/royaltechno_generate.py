@@ -198,7 +198,7 @@ def _run_curl(cmd, timeout_sec, what):
 
 def _api_request(method, path, api_key, payload=None):
     url = f"{API_BASE}{path}"
-    cmd = ["curl", "-s", "-X", method, url,
+    cmd = ["curl", "-s", "-S", "-X", method, url,
            "--max-time", str(REQUEST_TIMEOUT_SEC),
            "-H", f"Authorization: Bearer {api_key}",
            "-H", "Content-Type: application/json",
@@ -300,11 +300,29 @@ def _submit_and_wait_with_retries(submit_fn, api_key, log, label):
 
 def download_url(url, save_path):
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    cmd = ["curl", "-s", "-L", "--max-time", str(DOWNLOAD_TIMEOUT_SEC), "-o", str(save_path), url]
+    cmd = ["curl", "-s", "-S", "-L", "--max-time", str(DOWNLOAD_TIMEOUT_SEC), "-o", str(save_path), url]
     result = _run_curl(cmd, DOWNLOAD_TIMEOUT_SEC, "Скачивание")
     if result.returncode != 0:
         raise RuntimeError(f"curl не смог скачать файл (код {result.returncode}): "
-                            f"{result.stderr.strip()[-500:]}")
+                            f"{result.stderr.strip()[-500:] or '(сообщение об ошибке пустое)'} - {url}")
+
+
+def download_url_with_retries(url, save_path, log, label):
+    """Картинка/видео уже сгенерированы и оплачены к этому моменту - если
+    падает именно скачивание (а не сама генерация), нет смысла заказывать
+    генерацию заново, дешевле и быстрее просто повторить скачивание того
+    же самого готового файла несколько раз."""
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            download_url(url, save_path)
+            return
+        except Exception as e:
+            last_error = e
+            log(f"  [!] {label}: скачивание, попытка {attempt}/{MAX_RETRIES} не удалась ({e})")
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY_SEC)
+    raise RuntimeError(f"{label}: скачивание не удалось после {MAX_RETRIES} попыток ({last_error})")
 
 
 def _run_tasks_parallel(tasks, worker_fn, max_parallel, log):
@@ -380,7 +398,7 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
             )
             image_url = result["output"]["url"]
             cost = result.get("cost_usd_cents", 0)
-            download_url(image_url, raw_path)
+            download_url_with_retries(image_url, raw_path, log, f"картинка {num}/{which}")
             log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
                 f"сохранено: {raw_path}")
             with counters_lock:
@@ -495,7 +513,7 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
             )
             video_url = result["output"]["url"]
             cost = result.get("cost_usd_cents", 0)
-            download_url(video_url, video_path)
+            download_url_with_retries(video_url, video_path, log, f"видео {num}/{which}")
             log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
                 f"сохранено: {video_path}")
             with counters_lock:
