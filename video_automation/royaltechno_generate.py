@@ -307,7 +307,35 @@ def download_url(url, save_path):
                             f"{result.stderr.strip()[-500:] or '(сообщение об ошибке пустое)'} - {url}")
 
 
-def download_url_with_retries(url, save_path, log, label):
+def _looks_like_valid_image(path):
+    """Проверяет, что картинка скачалась ПОЛНОСТЬЮ, а не оборвалась на
+    середине (при обрыве соединения curl иногда всё равно сохраняет уже
+    полученный кусок файла - такой файл физически существует, но открыть
+    его целиком нельзя, обычно видно как серая заливка вместо низа
+    картинки)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return os.path.getsize(path) > 10_000  # нет Pillow - хотя бы грубая проверка размера
+    try:
+        with Image.open(path) as img:
+            img.verify()
+        return True
+    except Exception:
+        return False
+
+
+def _looks_like_valid_video(path):
+    """Грубая проверка на оборванную закачку видео - настоящий 8-секундный
+    ролик весит куда больше, чем то, что успевает долететь при обрыве
+    соединения на середине."""
+    try:
+        return os.path.getsize(path) > 100_000
+    except OSError:
+        return False
+
+
+def download_url_with_retries(url, save_path, log, label, verify_fn=None):
     """Картинка/видео уже сгенерированы и оплачены к этому моменту - если
     падает именно скачивание (а не сама генерация), нет смысла заказывать
     генерацию заново, дешевле и быстрее просто повторить скачивание того
@@ -316,9 +344,13 @@ def download_url_with_retries(url, save_path, log, label):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             download_url(url, save_path)
+            if verify_fn and not verify_fn(save_path):
+                raise RuntimeError("скачанный файл повреждён/обрезан (закачка оборвалась на середине)")
             return
         except Exception as e:
             last_error = e
+            if os.path.exists(save_path):
+                os.remove(save_path)  # не оставляем битый файл - иначе программа решит, что всё уже готово
             log(f"  [!] {label}: скачивание, попытка {attempt}/{MAX_RETRIES} не удалась ({e})")
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY_SEC)
@@ -385,9 +417,13 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
         if should_stop and should_stop():
             return
         if os.path.exists(raw_path):
-            with counters_lock:
-                counters["skipped"] += 1
-            return
+            if _looks_like_valid_image(raw_path):
+                with counters_lock:
+                    counters["skipped"] += 1
+                return
+            log(f"  [!] Сцена {num} ({which}): найденный файл повреждён (закачка когда-то "
+                f"оборвалась) - перегенерирую: {raw_path}")
+            os.remove(raw_path)
 
         full_prompt = expand_tags(base_prompt, ref_tags, library, log=log)
         log(f"=== Сцена {num} ({which}) - запрос картинки в RoyalTechno...")
@@ -398,7 +434,8 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
             )
             image_url = result["output"]["url"]
             cost = result.get("cost_usd_cents", 0)
-            download_url_with_retries(image_url, raw_path, log, f"картинка {num}/{which}")
+            download_url_with_retries(image_url, raw_path, log, f"картинка {num}/{which}",
+                                       verify_fn=_looks_like_valid_image)
             log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
                 f"сохранено: {raw_path}")
             with counters_lock:
@@ -492,9 +529,13 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
         if should_stop and should_stop():
             return
         if os.path.exists(video_path):
-            with counters_lock:
-                counters["skipped"] += 1
-            return
+            if _looks_like_valid_video(video_path):
+                with counters_lock:
+                    counters["skipped"] += 1
+                return
+            log(f"  [!] Сцена {num} ({which}): найденный файл повреждён (закачка когда-то "
+                f"оборвалась) - перегенерирую: {video_path}")
+            os.remove(video_path)
 
         upscaled_path = _find_upscaled_image(upscaled_dir, num, which)
         if not upscaled_path:
@@ -513,7 +554,8 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
             )
             video_url = result["output"]["url"]
             cost = result.get("cost_usd_cents", 0)
-            download_url_with_retries(video_url, video_path, log, f"видео {num}/{which}")
+            download_url_with_retries(video_url, video_path, log, f"видео {num}/{which}",
+                                       verify_fn=_looks_like_valid_video)
             log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
                 f"сохранено: {video_path}")
             with counters_lock:
