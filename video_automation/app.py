@@ -1490,6 +1490,14 @@ class App(tk.Tk):
             self.log(f"ОШИБКА подключения: {e}")
             return
 
+        # удаляем старые локальные копии перед скачиванием - иначе sftp
+        # пытается "докачать" файл, и если старая копия почему-то больше
+        # свежей версии на сервере, докачка ломается с ошибкой (нужна
+        # именно свежая полная копия, а не докачка маленького текстового файла)
+        for stale_path in (local_csv, local_library):
+            if stale_path.exists():
+                stale_path.unlink()
+
         self.log(f"\n>>> Скачиваю {csv_name} и OBJECT_LIBRARY.md для локальной генерации...\n")
         try:
             download_file(client, f"{REMOTE_DIR}/результаты/{csv_name}", str(local_csv))
