@@ -34,6 +34,7 @@ CONFIG_PATH = Path(__file__).resolve().parent / "video_automation_config.json"
 REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/automation"
 COMFYUI_INPUT_REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/input"
 COMFYUI_OUTPUT_REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/output"
+PREVIEW_REMOTE_DIR = f"{REMOTE_DIR}/превью"
 LOCAL_GENERATION_DIR = Path(__file__).resolve().parent / "local_generation"
 
 DEFAULT_CONFIG = {
@@ -790,7 +791,7 @@ class App(tk.Tk):
             return
         cmd = (f'python3 generate_thumbnails.py --blocks-dir "{blocks_dir}" '
                f'--library OBJECT_LIBRARY.md --titles-master MASTER_ПРОМТ_THUMBNAIL_TITLES.txt '
-               f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir превью')
+               f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir "{PREVIEW_REMOTE_DIR}"')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_thumbnails_run(self):
@@ -799,7 +800,7 @@ class App(tk.Tk):
             return
         cmd = (f'python3 generate_thumbnails.py --blocks-dir "{blocks_dir}" '
                f'--library OBJECT_LIBRARY.md --titles-master MASTER_ПРОМТ_THUMBNAIL_TITLES.txt '
-               f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir превью --run')
+               f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir "{PREVIEW_REMOTE_DIR}" --run')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_generate_music(self):
@@ -807,7 +808,7 @@ class App(tk.Tk):
         if not blocks_dir:
             return
         cmd = (f'python3 generate_music_prompt.py --blocks-dir "{blocks_dir}" '
-               f'--master MASTER_ПРОМТ_MUSIC.txt --output-dir превью')
+               f'--master MASTER_ПРОМТ_MUSIC.txt --output-dir "{PREVIEW_REMOTE_DIR}"')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_refresh_balance(self):
