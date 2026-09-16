@@ -17,6 +17,7 @@ video_automation_config.json (рядом с этой программой) - в�
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -325,6 +326,8 @@ class App(tk.Tk):
         ttk.Button(econ_row, text="C. Видео без RunPod", command=self.on_generate_videos_local,
                    width=22).pack(side="left", padx=4)
         ttk.Button(econ_row, text="D. Залить готовое на RunPod", command=self.on_upload_generated_to_runpod,
+                   width=28).pack(side="left", padx=4)
+        ttk.Button(econ_row, text="12. Сборка видео без RunPod", command=self.on_assemble_video_local,
                    width=28).pack(side="left", padx=4)
 
         # --- произвольная команда ---
@@ -1723,6 +1726,100 @@ class App(tk.Tk):
 
         self.log(f"\nГотово! Залито файлов: {total}. Кнопки 11/12 теперь увидят эти "
                   f"картинки/видео как обычно.\n")
+
+    def on_assemble_video_local(self):
+        local_folders = self._list_local_scenario_folders()
+        if not local_folders:
+            messagebox.showinfo(
+                "Нет файлов",
+                "На компьютере не найдено ни одной скачанной папки сценария "
+                "(там должен быть CSV и OBJECT_LIBRARY.md - обычно они появляются "
+                "после кнопки A).")
+            return
+
+        def _start(work_dir):
+            self.run_in_background(self._assemble_video_local_task, work_dir)
+
+        if len(local_folders) == 1:
+            _start(local_folders[0])
+        else:
+            names_list = [d.name for d in local_folders]
+
+            def _on_picked(picked_name):
+                if not picked_name:
+                    return
+                _start(LOCAL_GENERATION_DIR / picked_name)
+
+            self._show_file_picker_dialog(
+                names_list, str(LOCAL_GENERATION_DIR),
+                "Какой сценарий собрать в видео? (без RunPod)", _on_picked)
+
+    def _run_local_python_script(self, script_path: Path, args: list, prefix: str = ""):
+        """Запускает питон-скрипт прямо на этом компьютере (без RunPod) и
+        построчно выводит его вывод в журнал - так же, как exec_remote
+        делает это для команд по SSH."""
+        cmd = [sys.executable, str(script_path)] + [str(a) for a in args]
+        self.log(f"\n{prefix}>>> {' '.join(cmd)}\n")
+        try:
+            process = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1)
+        except FileNotFoundError as e:
+            self.log(f"{prefix}ОШИБКА запуска: {e}")
+            return 1
+        for line in process.stdout:
+            self.log(f"{prefix}{line.rstrip()}")
+        exit_code = process.wait()
+        self.log(f"\n{prefix}[завершено, код: {exit_code}]\n")
+        return exit_code
+
+    def _assemble_video_local_task(self, work_dir: Path):
+        csv_matches = list(work_dir.glob("*.csv"))
+        if not csv_matches:
+            self.log(f"[!] В {work_dir} не найден CSV.")
+            return
+        local_csv = csv_matches[0]
+        block_name = local_csv.stem
+
+        upscaled_dir = work_dir / "upscaled"
+        video_dir = work_dir / "video"
+        if not ((upscaled_dir.exists() and any(upscaled_dir.iterdir())) or
+                (video_dir.exists() and any(video_dir.iterdir()))):
+            self.log(f"[!] В {work_dir} нет ни апскейленных картинок (шаг B), ни видео "
+                      f"(шаг C) - сначала пройди эти шаги.")
+            return
+
+        audio_path = work_dir / f"{block_name}.mp3"
+        if not audio_path.exists():
+            self.log(f"\n>>> Озвучки нет на компьютере, скачиваю {block_name}.mp3 с RunPod "
+                      f"(этот шаг требует RunPod включённым)...\n")
+            try:
+                client = self.get_ssh_client()
+            except Exception as e:
+                self.log(f"ОШИБКА подключения: {e}")
+                return
+            try:
+                download_file(client, f"{REMOTE_DIR}/результаты/{block_name}.mp3", str(audio_path))
+            except Exception as e:
+                self.log(f"ОШИБКА скачивания озвучки: {e}")
+                return
+            self.log(">>> Озвучка скачана - дальше RunPod можно выключить, сборка идёт "
+                      "прямо на этом компьютере.\n")
+
+        script_path = Path(__file__).resolve().parent / "assemble_block_video.py"
+        output_path = work_dir / f"{block_name}_edit.mp4"
+        args = ["--csv", local_csv, "--audio", audio_path,
+                "--media-dir", upscaled_dir, "--media-dir2", video_dir,
+                "--output", output_path]
+
+        self.log(f"\n>>> Собираю видео блока (папка: {work_dir})...\n")
+        exit_code = self._run_local_python_script(script_path, args)
+        if exit_code == 0 and output_path.exists():
+            self.log(f"\nГотово! Видео сохранено: {output_path}\n")
+        else:
+            self.log(f"\n[!] Сборка не завершилась успешно (код {exit_code}). Смотри "
+                      f"текст ошибки выше. Если написано, что не найден 'ffmpeg' или "
+                      f"'ffprobe' - их нужно установить на этот компьютер и добавить в PATH.\n")
 
     def on_custom_command(self):
         cmd = self.custom_cmd_var.get().strip()
