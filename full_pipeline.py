@@ -199,14 +199,21 @@ def generate_creative_fields(frames_group: list, library: str, master_prompt: st
     получает творческие поля для каждого. Возвращает словарь {num: {поля}}.
     Проверяет, что вернулись строки на ВСЕ переданные num, что нет
     повреждённых строк (лишние ';' внутри промта), и что промты не слишком
-    короткие/абстрактные (есть style anchor, достаточно слов) - при любой
-    из этих проблем повторяет запрос."""
-    frames_list_text = "\n".join(
-        f"[{f['num']}] {f['voiceover_ru']}" for f in frames_group
-    )
-    expected_nums = {f["num"] for f in frames_group}
+    короткие/абстрактные (есть style anchor, достаточно слов). При проблеме
+    повторяет запрос, но ТОЛЬКО для тех кадров, которые реально не
+    получились - а не для всей пачки заново. Это и дешевле (меньше токенов
+    на повтор), и обычно даёт лучший результат - модели легче удержать
+    внимание на маленьком фокусированном запросе, чем на большой пачке."""
+    frames_by_num = {f["num"]: f for f in frames_group}
+    expected_nums = set(frames_by_num.keys())
+    result = {}
+    pending = list(frames_group)  # кадры, которые нужно запросить в этом раунде
 
     for attempt in range(max_retries + 1):
+        pending_nums = {f["num"] for f in pending}
+        frames_list_text = "\n".join(
+            f"[{f['num']}] {f['voiceover_ru']}" for f in pending
+        )
         user_content = (
             f"Ниже список кадров с их номерами и готовым текстом. Заполни творческую "
             f"часть для КАЖДОГО из них, строго по формату из системной инструкции.\n\n"
@@ -229,18 +236,25 @@ def generate_creative_fields(frames_group: list, library: str, master_prompt: st
         rows = list(reader)
 
         corrupted = [r for r in rows if r.get("_EXTRA_") or r.get("num") is None]
-        result = {}
+        round_result = {}
         for r in rows:
             try:
                 num = int(r["num"])
             except (ValueError, TypeError, KeyError):
                 continue
-            result[num] = r
+            if num in pending_nums:  # игнорируем строки не из этого раунда, мало ли что вернёт модель
+                round_result[num] = r
 
-        missing_nums = expected_nums - set(result.keys())
-        low_quality_nums = _find_low_quality_nums(result)
+        missing_nums = pending_nums - set(round_result.keys())
+        low_quality_nums = _find_low_quality_nums(round_result)
 
-        if not corrupted and not missing_nums and not low_quality_nums:
+        # принимаем все строки этого раунда, кроме тех, что оказались низкого качества
+        for num, row in round_result.items():
+            if num not in low_quality_nums:
+                result[num] = row
+
+        still_bad_nums = missing_nums | low_quality_nums
+        if not still_bad_nums:
             return result
 
         problems = []
@@ -251,8 +265,20 @@ def generate_creative_fields(frames_group: list, library: str, master_prompt: st
         if low_quality_nums:
             problems.append(f"слишком короткие/абстрактные промты у кадров {sorted(low_quality_nums)}")
         print(f"    [!] Проблема с ответом модели: {', '.join(problems)}")
+
         if attempt < max_retries:
-            print(f"    Повторяю запрос (попытка {attempt + 2}/{max_retries + 1})...")
+            print(f"    Повторяю запрос ТОЛЬКО для проблемных кадров "
+                  f"({len(still_bad_nums)} из {len(pending_nums)}), "
+                  f"попытка {attempt + 2}/{max_retries + 1}...")
+            pending = [frames_by_num[n] for n in still_bad_nums if n in frames_by_num]
+
+    # после всех попыток - если для каких-то кадров вообще ничего не приняли
+    # (например, они всё время оказывались "слишком короткими"), лучше взять
+    # то, что получилось в последнем раунде, чем оставить кадр совсем пустым
+    still_missing = expected_nums - set(result.keys())
+    for num, row in round_result.items():
+        if num in still_missing:
+            result[num] = row
 
     print(f"    [!!!] После {max_retries + 1} попыток остались проблемы - "
           f"использую то, что получилось (недостающие кадры получат заглушку, "
