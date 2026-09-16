@@ -356,8 +356,19 @@ class App(tk.Tk):
         subs_scrollbar.pack(side="right", fill="y")
         self.subs_input_text.configure(yscrollcommand=subs_scrollbar.set)
         self._add_context_menu(self.subs_input_text)
-        ttk.Button(subs_frame, text="Исправить текст и сохранить в файл",
-                   command=self.on_clean_subtitles).pack(anchor="w", padx=6, pady=(0, 6))
+
+        def _select_all_subs(event):
+            self.subs_input_text.tag_add("sel", "1.0", "end")
+            return "break"  # иначе Ctrl+A в Text по умолчанию делает не то (перевод в начало строки)
+
+        self.subs_input_text.bind("<Control-a>", _select_all_subs)
+
+        subs_btn_row = ttk.Frame(subs_frame)
+        subs_btn_row.pack(anchor="w", padx=6, pady=(0, 6))
+        ttk.Button(subs_btn_row, text="Исправить текст и сохранить в файл",
+                   command=self.on_clean_subtitles).pack(side="left", padx=(0, 6))
+        ttk.Button(subs_btn_row, text="Очистить поле",
+                   command=lambda: self.subs_input_text.delete("1.0", "end")).pack(side="left")
 
         # --- произвольная команда ---
         custom_frame = ttk.LabelFrame(frame, text="Своя команда (для гибкости)")
