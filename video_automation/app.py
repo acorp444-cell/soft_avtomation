@@ -19,6 +19,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -31,7 +32,6 @@ from ssh_runner import connect, run_command, get_pod_ssh_connection, download_fi
 from royaltechno_balance import get_royaltechno_balance
 from ssh_key_setup import ensure_key_installed
 from royaltechno_generate import generate_images, generate_videos_from_upscaled
-from clean_subtitles import clean_subtitles_text
 
 CONFIG_PATH = Path(__file__).resolve().parent / "video_automation_config.json"
 REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/automation"
@@ -338,13 +338,15 @@ class App(tk.Tk):
         ttk.Button(econ_row, text="12. Сборка видео без RunPod", command=self.on_assemble_video_local,
                    width=28).pack(side="left", padx=4)
 
-        # --- очистка субтитров с YouTube (без RunPod) ---
-        subs_frame = ttk.LabelFrame(frame, text="Исправление субтитров с YouTube (без RunPod)")
+        # --- очистка субтитров с YouTube (нужен включённый RunPod) ---
+        subs_frame = ttk.LabelFrame(frame, text="Исправление субтитров с YouTube (нужен включённый RunPod)")
         subs_frame.pack(fill="x", padx=6, pady=6)
         ttk.Label(subs_frame,
                   text="Вставь сюда скопированный с YouTube черновой текст субтитров (с ошибками, "
                        "без пунктуации, возможно с таймкодами - они уберутся сами). Программа вернёт "
-                       "сплошной текст с исправленной грамматикой и пунктуацией, без RunPod.",
+                       "сплошной текст с исправленной грамматикой и пунктуацией. RunPod должен быть "
+                       "включён (у OpenAI есть ограничения по региону - с домашнего интернета "
+                       "напрямую запрос может не пройти).",
                   foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
         subs_text_frame = ttk.Frame(subs_frame)
         subs_text_frame.pack(fill="x", padx=6, pady=(0, 6))
@@ -1871,23 +1873,58 @@ class App(tk.Tk):
         self.run_in_background(self._clean_subtitles_task, raw_text, save_path)
 
     def _clean_subtitles_task(self, raw_text, save_path):
+        """Исправление текста идёт НА RUNPOD (через SSH), а не прямо на
+        компьютере - у OpenAI есть ограничения по стране/региону, и с
+        домашнего интернета пользователя прямые запросы иногда
+        отклоняются (сервер RunPod - в другой стране, поэтому там
+        обращения к OpenAI проходят, как и для остальных функций)."""
         model = self.config_data.get("openai_model") or "gpt-4o"
-        api_key = self.config_data.get("openai_api_key")
-        api_base = self.config_data.get("openai_base_url") or "https://api.openai.com/v1"
 
-        self.log("\n>>> Исправляю текст субтитров через OpenAI (без RunPod)...\n")
         try:
-            cleaned = clean_subtitles_text(raw_text, api_key, model=model, api_base=api_base, log=self.log)
+            client = self.get_ssh_client()
         except Exception as e:
-            self.log(f"ОШИБКА: {e}")
+            self.log(f"ОШИБКА подключения: {e}")
             return
 
+        tmp_dir = Path(tempfile.mkdtemp())
+        local_input = tmp_dir / "субтитры_вход.txt"
+        local_output = tmp_dir / "субтитры_выход.txt"
+        local_input.write_text(raw_text, encoding="utf-8")
+
+        remote_input = f"{REMOTE_DIR}/_tmp_субтитры_вход.txt"
+        remote_output = f"{REMOTE_DIR}/_tmp_субтитры_выход.txt"
+
+        self.log("\n>>> Загружаю текст на RunPod...\n")
+        try:
+            upload_file(client, str(local_input), remote_input)
+        except Exception as e:
+            self.log(f"ОШИБКА загрузки текста на сервер: {e}")
+            return
+
+        cmd = (f'python3 clean_subtitles.py --input "{remote_input}" '
+               f'--output "{remote_output}" --model "{model}"')
+        self.exec_remote(cmd)
+
+        self.log("\n>>> Скачиваю исправленный текст...\n")
+        try:
+            download_file(client, remote_output, str(local_output))
+        except Exception as e:
+            self.log(f"ОШИБКА скачивания результата (возможно, исправление не удалось - "
+                     f"смотри текст ошибки выше): {e}")
+            return
+
+        cleaned = local_output.read_text(encoding="utf-8")
         try:
             with open(save_path, "w", encoding="utf-8") as f:
                 f.write(cleaned)
         except Exception as e:
             self.log(f"ОШИБКА сохранения файла: {e}")
             return
+
+        try:
+            run_command(client, f'rm -f "{remote_input}" "{remote_output}"', on_output=lambda _: None)
+        except Exception:
+            pass  # уборка временных файлов на сервере необязательна
 
         self.log(f"\nГотово! Исправленный текст сохранён: {save_path}\n")
 
