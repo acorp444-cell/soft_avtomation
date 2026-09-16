@@ -1481,17 +1481,19 @@ class App(tk.Tk):
             if use_existing:
                 if len(local_folders) == 1:
                     work_dir = local_folders[0]
+                    self._ask_limit_and_generate_images_local(work_dir=work_dir)
                 else:
                     names_list = [d.name for d in local_folders]
-                    picked = self.ask_text_dialog(
-                        "Какую папку использовать?",
-                        "На компьютере несколько скачанных сценариев. Введи точное "
-                        "название нужной папки:\n" + "\n".join(names_list),
-                        initial_value=names_list[0])
-                    if not picked or picked.strip() not in names_list:
-                        return
-                    work_dir = LOCAL_GENERATION_DIR / picked.strip()
-                self._ask_limit_and_generate_images_local(work_dir=work_dir)
+
+                    def _on_local_folder_picked(picked_name):
+                        if not picked_name:
+                            return
+                        self._ask_limit_and_generate_images_local(
+                            work_dir=LOCAL_GENERATION_DIR / picked_name)
+
+                    self._show_file_picker_dialog(
+                        names_list, str(LOCAL_GENERATION_DIR),
+                        "Какую папку использовать? (без RunPod)", _on_local_folder_picked)
                 return
 
         self.pick_remote_file_async(f"{REMOTE_DIR}/результаты", ".csv",
