@@ -1,15 +1,28 @@
 """
 Автоматически собирает готовое видео ОДНОГО БЛОКА из уже сгенерированных
-картинок/видео и озвучки, по правилам:
+картинок/видео и озвучки. video1/video2 генерируются с фиксированной
+длиной 8 секунд (Veo) - поэтому правила зависят от того, насколько кадр
+превышает эти 8 секунд:
 
-  - кадр <= 4 сек:           статичная картинка img1, эффект Кена Бёрнса
-  - 4 сек < кадр <= 8 сек:   только video1, обрезаем до нужной длины
-  - 8 сек < кадр <= 12 сек:  video1 (целиком) + img2 (Кен Бёрнс) на остаток
-  - кадр >= 13 сек:          video1 + video2, обрезаем/дозаполняем стоп-кадром
+  - кадр <= 4 сек:            статичная картинка img1, эффект Кена Бёрнса
+  - 4 сек < кадр <= 8 сек:    только video1, обрезаем до нужной длины
+  - 8 сек < кадр <= 10 сек:   только video1, ЗАМЕДЛЯЕМ (растягиваем по
+                                скорости), чтобы растянуть ровно до нужной
+                                длины - нехватка маленькая (1-2 сек), для
+                                неё это менее заметно, чем заморозка кадра
+  - 10 сек < кадр <= 12 сек:  video1 (целиком, без замедления) + img2
+                                (Кен Бёрнс) на остаток
+  - кадр > 12 сек:            video1 (целиком) + video2, обрезаем/
+                                дозаполняем стоп-кадром на остаток
 
-Все обрезки - только ОБРЕЗКА, никогда не ускорение видео (по твоему
-явному указанию). Если видео короче нужного даже вдвоём - остаток
-заполняется "заморозкой" последнего кадра второго видео.
+Кен Бёрнс на картинках всегда использует масштаб 104% -> 115%. Видео-
+кадры (обрезка/переприкодирование) всегда используют масштаб 108% с
+обрезкой по центру - убирает чёрные рамки при несовпадении пропорций.
+
+Замедление применяется ТОЛЬКО в узком диапазоне 8-10 секунд (по явному
+указанию) - во всех остальных случаях действует правило "только обрезка,
+никогда не ускорение/замедление". Если видео короче нужного даже вдвоём -
+остаток заполняется "заморозкой" последнего кадра второго видео.
 
 Финальное видео блока = склеенные кадры (без звука) + наложенная поверх
 непрерывная озвучка блока (mp3) - монтаж кадр в кадр под уже точный
@@ -44,7 +57,7 @@ WIDTH, HEIGHT, FPS = 1920, 1080, 25
 sys.stdout.reconfigure(line_buffering=True)
 
 TRANSITION_DURATION = 0.5  # длительность плавного перехода между кадрами ("микс" в CapCut)
-VIDEO_OVERSCAN = 1.04  # масштаб 104% с обрезкой по центру - убирает чёрные рамки
+VIDEO_OVERSCAN = 1.08  # масштаб 108% с обрезкой по центру - убирает чёрные рамки
 _OVERSCAN_W = int(WIDTH * VIDEO_OVERSCAN)
 _OVERSCAN_H = int(HEIGHT * VIDEO_OVERSCAN)
 SCALE_CROP_VF = (
@@ -115,7 +128,7 @@ def build_kenburns_clip(image_path: Path, duration_sec: float, output_path: Path
 
 def trim_video(input_path: Path, duration_sec: float, output_path: Path):
     """Обрезает видео до нужной длины (никогда не ускоряет), приводит к
-    единому формату для последующей склейки. Масштаб 104% с обрезкой по
+    единому формату для последующей склейки. Масштаб 108% с обрезкой по
     центру - убирает чёрные рамки при небольшом несовпадении пропорций."""
     return run_ffmpeg([
         "-i", str(input_path), "-t", str(duration_sec),
@@ -127,13 +140,37 @@ def trim_video(input_path: Path, duration_sec: float, output_path: Path):
 
 def full_video_reencoded(input_path: Path, output_path: Path):
     """Переприводит видео целиком к единому формату, без обрезки по
-    времени. Масштаб 104% с обрезкой по центру - убирает чёрные рамки."""
+    времени. Масштаб 108% с обрезкой по центру - убирает чёрные рамки."""
     return run_ffmpeg([
         "-i", str(input_path),
         "-vf", SCALE_CROP_VF,
         "-c:v", "libx264", "-an",
         str(output_path),
     ], f"перекодирование {input_path.name}")
+
+
+def stretch_video_to_duration(input_path: Path, target_duration: float, output_path: Path):
+    """Замедляет видео (без изменения контента, только скорость), чтобы
+    растянуть его РОВНО до target_duration. Используется только для
+    небольшой нехватки (кадр 8-10 сек, video1/video2 короче на 1-2 сек) -
+    в этом узком случае лёгкое замедление менее заметно, чем "заморозка"
+    последнего кадра на пару секунд. Масштаб 108% с обрезкой по центру -
+    как и у остальных видео-клипов."""
+    actual_dur = get_duration(input_path)
+    if not actual_dur or actual_dur <= 0:
+        return False
+    factor = target_duration / actual_dur  # > 1 = замедление
+    vf = (
+        f"setpts={factor}*PTS,"
+        f"scale={_OVERSCAN_W}:{_OVERSCAN_H}:force_original_aspect_ratio=increase,"
+        f"crop={WIDTH}:{HEIGHT},fps={FPS},format=yuv420p"
+    )
+    return run_ffmpeg([
+        "-i", str(input_path),
+        "-vf", vf,
+        "-c:v", "libx264", "-an",
+        str(output_path),
+    ], f"замедление {input_path.name} до {target_duration:.1f} сек")
 
 
 def freeze_last_frame_clip(input_path: Path, freeze_duration: float, output_path: Path):
@@ -229,30 +266,59 @@ def build_frame_clip(media_dir: Path, num: str, frame_duration: int, work_dir: P
 
     primary_dur = get_duration(primary_path) or 0
 
-    # 4-8 сек: только primary-видео, обрезка/дозаполнение заморозкой
+    # <= 8 сек: только primary-видео, просто обрезаем до нужной длины
     if frame_duration <= 8:
         result = _make_clip_from_video(primary_path, frame_duration, work_dir, tag)
         return result if result else None
 
-    # больше 8 сек: primary целиком + вторая часть на остаток
+    # 8-10 сек: небольшая нехватка (1-2 сек по сравнению с 8-секундным
+    # video1/video2) - не подменяем картинкой/вторым видео, а слегка
+    # ЗАМЕДЛЯЕМ primary, чтобы растянуть ровно до нужной длины (только в
+    # этом узком диапазоне - по явному указанию)
+    if frame_duration <= 10:
+        stretched_clip = work_dir / f"{tag}_stretched.mp4"
+        if stretch_video_to_duration(primary_path, frame_duration, stretched_clip):
+            return stretched_clip
+        # не получилось замедлить - запасной вариант, как раньше (обрезка/заморозка)
+        result = _make_clip_from_video(primary_path, frame_duration, work_dir, tag)
+        return result if result else None
+
+    # больше 10 сек: primary целиком (без замедления) + вторая часть на остаток
     primary_clip = work_dir / f"{tag}_primary.mp4"
     if not full_video_reencoded(primary_path, primary_clip):
         return None
     remaining = max(0.5, frame_duration - primary_dur)
 
-    # приоритет второй части тоже за видео (другое по номеру), потом
-    # разрешённая картинка (с другим номером), потом заморозка как крайний случай
-    if other_video:
-        second_clip = _make_clip_from_video(other_video, remaining, work_dir, f"{tag}_second")
-        if second_clip:
-            return concat_clips([primary_clip, second_clip], out_path)
+    if frame_duration <= 12:
+        # 10-12 сек: остаток небольшой (2-4 сек) - добираем картинкой (Кен Бёрнс)
+        preferred, fallback = allowed_img, other_video
+        preferred_is_img = True
+    else:
+        # больше 12 сек: остаток заметный - добираем ВТОРЫМ ВИДЕО
+        preferred, fallback = other_video, allowed_img
+        preferred_is_img = False
 
-    if allowed_img:
-        img_clip = work_dir / f"{tag}_img.mp4"
-        if build_kenburns_clip(allowed_img, remaining, img_clip):
-            return concat_clips([primary_clip, img_clip], out_path)
+    if preferred:
+        if preferred_is_img:
+            img_clip = work_dir / f"{tag}_img.mp4"
+            if build_kenburns_clip(preferred, remaining, img_clip):
+                return concat_clips([primary_clip, img_clip], out_path)
+        else:
+            second_clip = _make_clip_from_video(preferred, remaining, work_dir, f"{tag}_second")
+            if second_clip:
+                return concat_clips([primary_clip, second_clip], out_path)
 
-    # крайний случай - ни другого видео, ни разрешённой картинки нет -
+    if fallback:
+        if preferred_is_img:
+            second_clip = _make_clip_from_video(fallback, remaining, work_dir, f"{tag}_second")
+            if second_clip:
+                return concat_clips([primary_clip, second_clip], out_path)
+        else:
+            img_clip = work_dir / f"{tag}_img.mp4"
+            if build_kenburns_clip(fallback, remaining, img_clip):
+                return concat_clips([primary_clip, img_clip], out_path)
+
+    # крайний случай - ни второго видео, ни разрешённой картинки нет -
     # дозаполняем заморозкой самого primary (лучше так, чем ничего)
     freeze_clip = work_dir / f"{tag}_freeze.mp4"
     if freeze_last_frame_clip(primary_path, remaining, freeze_clip):
