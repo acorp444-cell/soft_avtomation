@@ -319,7 +319,11 @@ def _looks_like_valid_image(path):
         return os.path.getsize(path) > 10_000  # нет Pillow - хотя бы грубая проверка размера
     try:
         with Image.open(path) as img:
-            img.verify()
+            # .verify() слишком "мягкая" для JPEG - может пропустить
+            # оборванный файл, не заметив, что не хватает конца данных.
+            # .load() заставляет Pillow реально разобрать ВСЕ пиксели,
+            # поэтому обрыв обязательно вылезет ошибкой.
+            img.load()
         return True
     except Exception:
         return False
