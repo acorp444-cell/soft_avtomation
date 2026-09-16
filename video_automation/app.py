@@ -20,6 +20,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -395,6 +396,13 @@ class App(tk.Tk):
         def wrapper():
             try:
                 func(*args)
+            except Exception as e:
+                # раньше любая неожиданная ошибка здесь пропадала молча -
+                # снаружи выглядело как "ничего не происходит", хотя на
+                # самом деле фоновая задача упала. Теперь пишем в журнал
+                # полную трассировку, чтобы было видно, что случилось.
+                self.log(f"\n[!!!] Неожиданная ОШИБКА в фоновой задаче: {e}\n"
+                          f"{traceback.format_exc()}\n")
             finally:
                 with self.active_tasks_lock:
                     self.active_tasks_count -= 1
