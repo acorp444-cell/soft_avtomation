@@ -28,6 +28,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import urllib.error
@@ -266,7 +267,50 @@ def queue_upscale(comfyui_url, template, input_filename, output_prefix, width, h
         return json.loads(resp.read().decode("utf-8"))
 
 
-def process_thumbnail(index, prompt, comfyui_url, comfyui_input_dir, upscale_template):
+def wait_for_comfy_job(comfyui_url, prompt_id, timeout_sec=180, poll_every=3):
+    """Ждёт, пока ComfyUI реально закончит апскейл (не просто поставит в
+    очередь), и возвращает список готовых файлов [(filename, subfolder), ...] -
+    нужно, чтобы потом скопировать их в папку превью, а не оставлять только
+    в служебной папке ComfyUI/output."""
+    started = time.time()
+    while time.time() - started < timeout_sec:
+        req = urllib.request.Request(f"{comfyui_url}/history/{prompt_id}")
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        entry = data.get(prompt_id)
+        if entry is not None:
+            status = entry.get("status", {})
+            if status.get("status_str") == "error":
+                raise RuntimeError(f"ComfyUI сообщил об ошибке: {status}")
+            files = []
+            for node_output in entry.get("outputs", {}).values():
+                for img in node_output.get("images", []):
+                    files.append((img["filename"], img.get("subfolder", "")))
+            return files
+        time.sleep(poll_every)
+    raise TimeoutError(f"Апскейл {prompt_id} не завершился за {timeout_sec} сек")
+
+
+def copy_finished_images(comfyui_output_dir, files, dest_dir):
+    """Копирует готовые файлы из служебной папки ComfyUI/output в папку
+    превью (dest_dir), чтобы итоговые картинки лежали там же, где текст
+    заголовков и промтов, а не только в ComfyUI/output."""
+    os.makedirs(dest_dir, exist_ok=True)
+    copied = []
+    for filename, subfolder in files:
+        src = os.path.join(comfyui_output_dir, subfolder, filename) if subfolder \
+            else os.path.join(comfyui_output_dir, filename)
+        dest = os.path.join(dest_dir, filename)
+        if os.path.exists(src):
+            shutil.copy2(src, dest)
+            copied.append(dest)
+        else:
+            print(f"[!] Не нашла готовый файл {src} для копирования в {dest_dir}")
+    return copied
+
+
+def process_thumbnail(index, prompt, comfyui_url, comfyui_input_dir, comfyui_output_dir,
+                       upscale_template, dest_dir):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             print(f"\n=== Превью {index} (попытка {attempt}/{MAX_RETRIES}) ===")
@@ -288,8 +332,14 @@ def process_thumbnail(index, prompt, comfyui_url, comfyui_input_dir, upscale_tem
                 comfyui_url, upscale_template, raw_filename,
                 f"thumb_{index:02d}", FINAL_WIDTH, FINAL_HEIGHT,
             )
+            prompt_id = upscale_result.get("prompt_id")
             print(f"[+] Отправлено на апскейл до {FINAL_WIDTH}x{FINAL_HEIGHT}, "
-                  f"id задачи ComfyUI: {upscale_result.get('prompt_id')}")
+                  f"id задачи ComfyUI: {prompt_id}, жду завершения...")
+
+            files = wait_for_comfy_job(comfyui_url, prompt_id)
+            copied = copy_finished_images(comfyui_output_dir, files, dest_dir)
+            for path in copied:
+                print(f"[+] Готовая картинка: {path}")
             return True
 
         except Exception as e:
@@ -314,6 +364,9 @@ def main():
     parser.add_argument("--comfyui-url", default="http://127.0.0.1:8188")
     parser.add_argument("--comfyui-input-dir", default=None,
                          help="Папка ComfyUI/input (по умолчанию ../input относительно скрипта)")
+    parser.add_argument("--comfyui-output-dir", default=None,
+                         help="Папка ComfyUI/output (по умолчанию ../output относительно скрипта) - "
+                              "откуда копируются готовые картинки в --output-dir")
     parser.add_argument("--run", action="store_true", help="Реально генерировать картинки (без флага - только текст заголовков и промтов)")
     parser.add_argument("--limit", type=int, default=None, help="Сгенерировать только первые N картинок (для теста)")
     parser.add_argument("--text-model", default=TEXT_MODEL)
@@ -370,6 +423,7 @@ def main():
     # Шаг 3: генерация картинок + апскейл
     script_dir = Path(__file__).resolve().parent
     comfyui_input_dir = args.comfyui_input_dir or str(script_dir / ".." / "input")
+    comfyui_output_dir = args.comfyui_output_dir or str(script_dir / ".." / "output")
     os.makedirs(comfyui_input_dir, exist_ok=True)
 
     upscale_workflow_path = args.upscale_workflow
@@ -385,13 +439,14 @@ def main():
 
     failed = []
     for i, prompt in enumerate(image_prompts_to_run, 1):
-        success = process_thumbnail(i, prompt, args.comfyui_url, comfyui_input_dir, upscale_template)
+        success = process_thumbnail(i, prompt, args.comfyui_url, comfyui_input_dir,
+                                     comfyui_output_dir, upscale_template, str(output_dir))
         if not success:
             failed.append(i)
         time.sleep(1)
 
-    print(f"\n=== Готово! Картинки появятся в ComfyUI/output как thumb_01... thumb_{len(image_prompts):02d} "
-          f"после апскейла ({FINAL_WIDTH}x{FINAL_HEIGHT}). ===")
+    print(f"\n=== Готово! Картинки thumb_01... thumb_{len(image_prompts):02d} "
+          f"после апскейла ({FINAL_WIDTH}x{FINAL_HEIGHT}) скопированы в {output_dir}. ===")
     if failed:
         print(f"Не удалось сгенерировать превью: {failed}. Можно перезапустить с --run.")
 
