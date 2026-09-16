@@ -9,9 +9,13 @@ generate_via_api_and_upscale.py
      $0.02 или бесплатно в рамках дневного лимита)
   3. Ждёт готовности картинки, скачивает её в папку ComfyUI/input
   4. Прогоняет картинку через ЛОКАЛЬНЫЙ ComfyUI — только апскейл (модель
-     4x-UltraSharp), без повторной генерации — увеличивает до 2048x1152
+     4x-UltraSharp), без повторной генерации — увеличивает до 2048x1152,
+     и ЖДЁТ завершения апскейла
   5. Финальный результат сохраняется в ComfyUI/output с именем вида
      001_img1.png, 001_img2.png
+  6. Если сцена помечена animate=TRUE — оживляет через Veo УЖЕ
+     АПСКЕЙЛЕННУЮ картинку (не сырую), чтобы видео было того же
+     качества, что и финальные кадры
 
 ТРЕБОВАНИЯ ПЕРЕД ЗАПУСКОМ:
   - ComfyUI должен быть запущен (это уже проверяется само по себе, если
@@ -32,8 +36,11 @@ generate_via_api_and_upscale.py
 """
 
 import argparse
+import base64
 import copy
 import csv
+import glob
+import io
 import json
 import os
 import re
@@ -83,6 +90,18 @@ POLL_EVERY_SEC = 3
 POLL_TIMEOUT_SEC = 300
 MAX_RETRIES = 3          # сколько раз пробовать одну сцену при сбое API
 RETRY_DELAY_SEC = 10     # пауза между попытками
+
+# Ожидание завершения апскейла в ЛОКАЛЬНОМ ComfyUI (отдельные тайминги от
+# ожидания задач RoyalTechno выше - апскейл обычно намного быстрее)
+COMFY_POLL_EVERY_SEC = 2
+COMFY_POLL_TIMEOUT_SEC = 180
+
+# Лимит RoyalTechno на инлайн-картинку (data URI) - 5 МиБ после
+# раскодирования. Апскейленный PNG (2048x1152) легко может быть тяжелее,
+# поэтому перед отправкой в видео пересжимаем в JPEG хорошего качества -
+# так гарантированно укладываемся в лимит.
+INLINE_IMAGE_JPEG_QUALITY = 90
+INLINE_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -233,18 +252,17 @@ def submit_image_job(prompt):
     return result["id"]
 
 
-def submit_video_job(prompt, start_image_url):
+def submit_video_job(prompt, start_image_source):
     """
     Отправляет задачу оживления готовой картинки в видео через Veo.
-    start_image_url — прямая ссылка на уже сгенерированную картинку
-    (можно взять из output готовой image-задачи, или из локального файла,
-    если он предварительно загружен куда-то с публичным доступом).
+    start_image_source — либо обычная ссылка (str, начинается с http),
+    либо инлайн data URI (str, начинается с 'data:' - см. _image_to_data_uri).
     """
     payload = {
         "model": VIDEO_MODEL,
         "input": {
             "prompt": prompt,
-            "start_image_url": start_image_url,
+            "start_image_url": start_image_source,
             "aspect_ratio": IMAGE_ASPECT_RATIO,
             "duration_sec": VIDEO_DURATION_SEC,
             "resolution": VIDEO_RESOLUTION,
@@ -297,7 +315,6 @@ def load_upscale_template():
 def scene_is_complete(num, which, animate_flag):
     """Проверяет, есть ли уже готовый результат для этой сцены (картинка,
     и видео, если сцена анимированная) — чтобы не тратить деньги повторно."""
-    import glob
     image_pattern = os.path.join(COMFYUI_OUTPUT_DIR, f"{num}_{which}*.png")
     if not glob.glob(image_pattern):
         return False
@@ -306,6 +323,67 @@ def scene_is_complete(num, which, animate_flag):
         if not os.path.exists(video_path):
             return False
     return True
+
+
+def wait_for_comfy_job(prompt_id, timeout_sec=COMFY_POLL_TIMEOUT_SEC):
+    started = time.time()
+    while time.time() - started < timeout_sec:
+        req = urllib.request.Request(f"{COMFYUI_URL}/history/{prompt_id}")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Не удалось обратиться к ComfyUI: {e}")
+
+        entry = data.get(prompt_id)
+        if entry is not None:
+            status = entry.get("status", {})
+            if status.get("status_str") == "error":
+                raise RuntimeError(f"ComfyUI сообщил об ошибке апскейла: {status}")
+            return entry
+        time.sleep(COMFY_POLL_EVERY_SEC)
+
+    raise TimeoutError(f"Апскейл {prompt_id} не завершился за {timeout_sec} сек")
+
+
+def find_upscaled_file(prefix):
+    matches = sorted(glob.glob(os.path.join(COMFYUI_OUTPUT_DIR, f"{prefix}_*.png")))
+    return matches[-1] if matches else None
+
+
+def _image_to_data_uri(image_path):
+    """Пересжимает картинку в JPEG нужного качества и кодирует в base64
+    data URI - чтобы гарантированно уложиться в лимит RoyalTechno (5 МиБ
+    после раскодирования) независимо от того, насколько тяжёлый PNG
+    получился после апскейла."""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise RuntimeError(
+            "Не установлена библиотека Pillow (нужна, чтобы пересжать картинку "
+            "в JPEG перед отправкой в видео-генерацию). Выполни: "
+            "python3 -m pip install Pillow"
+        )
+
+    img = Image.open(image_path).convert("RGB")
+    buf = io.BytesIO()
+    quality = INLINE_IMAGE_JPEG_QUALITY
+    while True:
+        buf.seek(0)
+        buf.truncate()
+        img.save(buf, format="JPEG", quality=quality)
+        if buf.tell() <= INLINE_IMAGE_MAX_BYTES or quality <= 40:
+            break
+        quality -= 10  # картинка всё ещё слишком тяжёлая - снижаем качество и пробуем снова
+
+    if buf.tell() > INLINE_IMAGE_MAX_BYTES:
+        raise RuntimeError(
+            f"Картинка {image_path} весит {buf.tell()} байт даже после сжатия "
+            f"до качества {quality} - больше лимита RoyalTechno (5 МиБ)"
+        )
+
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 def process_scene(num, which, full_prompt, row, upscale_template):
@@ -328,17 +406,30 @@ def process_scene(num, which, full_prompt, row, upscale_template):
         download_image(image_url, raw_path)
         print(f"[+] Скачано в {raw_path}")
 
-        # 4. Апскейл через локальный ComfyUI
-        upscale_result = queue_upscale(upscale_template, raw_filename, f"{num}_{which}")
-        print(f"[+] Отправлено на апскейл, id задачи ComfyUI: {upscale_result.get('prompt_id')}")
+        # 4. Апскейл через локальный ComfyUI - ЖДЁМ завершения (не "и
+        #    забыл", как было раньше), потому что видео ниже должно
+        #    делаться из уже апскейленной картинки, а не из сырой
+        prefix = f"{num}_{which}"
+        upscale_result = queue_upscale(upscale_template, raw_filename, prefix)
+        upscale_prompt_id = upscale_result.get("prompt_id")
+        print(f"[+] Отправлено на апскейл, id задачи ComfyUI: {upscale_prompt_id}, жду завершения...")
+        wait_for_comfy_job(upscale_prompt_id)
+        upscaled_path = find_upscaled_file(prefix)
+        if not upscaled_path:
+            raise RuntimeError(f"Апскейл {prefix} завершился, но файл результата "
+                                f"не найден в {COMFYUI_OUTPUT_DIR}")
+        print(f"[+] Апскейл готов: {upscaled_path}")
 
         # 5. Если сцена помечена animate=TRUE — оживляем КАЖДУЮ картинку
-        #    (и img1, и img2) через Veo — получаем 2 видео на сцену
+        #    (и img1, и img2) через Veo — получаем 2 видео на сцену.
+        #    Берём УЖЕ АПСКЕЙЛЕННУЮ картинку (не сырую) - иначе видео
+        #    получалось хуже качеством, чем финальные кадры-картинки.
         animate_flag = row.get("animate", "").strip().upper()
         video_prompt = row.get("video_prompt", "").strip()
         if animate_flag == "TRUE" and video_prompt:
             print(f"[i] Сцена {num} ({which}) помечена animate=TRUE, запускаю Veo...")
-            video_job_id = submit_video_job(video_prompt, image_url)
+            start_image_source = _image_to_data_uri(upscaled_path)
+            video_job_id = submit_video_job(video_prompt, start_image_source)
             print(f"[+] Видео-задача отправлена, id: {video_job_id}")
             video_result = wait_for_job(video_job_id)
             video_url = video_result["output"]["url"]
