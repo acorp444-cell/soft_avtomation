@@ -103,16 +103,34 @@ def strip_wrapping(text: str) -> str:
     return text.strip()
 
 
+def truncate_for_prompt(text: str, max_chars: int) -> str:
+    """Обрезает текст сценария, если он слишком длинный - иначе на длинных
+    сценариях запрос к модели упирается в лимит токенов в минуту (TPM) на
+    аккаунте OpenAI и падает с ошибкой 429. Для заголовков/идей превью не
+    нужен буквально весь текст до последнего блока - оставляем начало,
+    где обычно раскрывается основная тема и тон фильма."""
+    if len(text) <= max_chars:
+        return text
+    print(f"  [i] Сценарий длинный ({len(text)} символов) - для этого запроса "
+          f"беру только первые {max_chars} (экономия токенов/лимита OpenAI)")
+    return text[:max_chars] + "\n\n[...остальной текст сценария сокращён для экономии токенов...]"
+
+
 # ---------- шаг 1: тексты заголовков ----------
+
+MAX_CHARS_FOR_TITLES = 30000
+MAX_CHARS_FOR_IMAGE_PROMPTS = 20000  # меньше, чем для заголовков - сюда же добавляется библиотека объектов
+
 
 def generate_titles(full_script: str, master_prompt: str, client, model) -> list:
     print("Генерирую 10 вариантов текста заголовка...")
+    script_for_prompt = truncate_for_prompt(full_script, MAX_CHARS_FOR_TITLES)
     response = client.chat.completions.create(
         model=model,
         max_tokens=2000,
         messages=[
             {"role": "system", "content": master_prompt},
-            {"role": "user", "content": f"ПОЛНЫЙ ТЕКСТ СЦЕНАРИЯ:\n\n{full_script}"},
+            {"role": "user", "content": f"ПОЛНЫЙ ТЕКСТ СЦЕНАРИЯ:\n\n{script_for_prompt}"},
         ],
     )
     text = strip_wrapping(response.choices[0].message.content)
@@ -124,6 +142,7 @@ def generate_titles(full_script: str, master_prompt: str, client, model) -> list
 
 def generate_image_prompts(full_script: str, library: str, master_prompt: str, client, model):
     print("Анализирую сценарий и генерирую 10 вариантов сцены для превью...")
+    script_for_prompt = truncate_for_prompt(full_script, MAX_CHARS_FOR_IMAGE_PROMPTS)
     response = client.chat.completions.create(
         model=model,
         max_tokens=4000,
@@ -131,7 +150,7 @@ def generate_image_prompts(full_script: str, library: str, master_prompt: str, c
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": (
                 f"OBJECT_LIBRARY.md:\n{library}\n\n"
-                f"ПОЛНЫЙ ТЕКСТ СЦЕНАРИЯ:\n\n{full_script}"
+                f"ПОЛНЫЙ ТЕКСТ СЦЕНАРИЯ:\n\n{script_for_prompt}"
             )},
         ],
     )

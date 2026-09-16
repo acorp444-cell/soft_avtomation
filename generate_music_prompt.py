@@ -58,14 +58,27 @@ def strip_wrapping(text: str) -> str:
     return text.strip()
 
 
+MAX_CHARS_FOR_MUSIC = 30000  # чтобы не упереться в лимит токенов в минуту (TPM) на длинных сценариях
+
+
+def truncate_for_prompt(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    print(f"  [i] Сценарий длинный ({len(text)} символов) - беру только первые "
+          f"{max_chars} (экономия токенов/лимита OpenAI). Для музыки этого достаточно - "
+          f"настроение и тема фильма обычно понятны уже по первой части сценария.")
+    return text[:max_chars] + "\n\n[...остальной текст сценария сокращён для экономии токенов...]"
+
+
 def generate_music_prompts(full_script: str, master_prompt: str, client, model) -> str:
     print("Анализирую сценарий и подбираю варианты фоновой музыки...")
+    script_for_prompt = truncate_for_prompt(full_script, MAX_CHARS_FOR_MUSIC)
     response = client.chat.completions.create(
         model=model,
         max_tokens=1500,
         messages=[
             {"role": "system", "content": master_prompt},
-            {"role": "user", "content": f"ПОЛНЫЙ ТЕКСТ СЦЕНАРИЯ:\n\n{full_script}"},
+            {"role": "user", "content": f"ПОЛНЫЙ ТЕКСТ СЦЕНАРИЯ:\n\n{script_for_prompt}"},
         ],
     )
     print(f"токенов: {response.usage.total_tokens}")
