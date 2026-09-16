@@ -740,10 +740,22 @@ class App(tk.Tk):
         blocks_dir = self.get_blocks_dir_or_warn()
         if not blocks_dir:
             return
+        only_block = self.ask_text_dialog(
+            "Какой блок обработать?",
+            "Для теста введи имя файла блока БЕЗ .txt (например: 3_блок) - "
+            "обработается только он. Оставь поле пустым, чтобы обработать "
+            "все блоки сценария, как обычно.",
+            initial_value="")
+        if only_block is None:
+            return  # нажали "Отмена"
+        only_block = only_block.strip()
+
         template_id = self.config_data.get("lumean_template_id", "")
         cmd = (f'python3 full_pipeline.py --blocks-dir "{blocks_dir}" '
                f'--library OBJECT_LIBRARY.md --master VEO_3_МАСТЕР_ПРОМТ_КРЕАТИВ.txt '
                f'--template-id {template_id} --output-dir результаты --start-num 1')
+        if only_block:
+            cmd += f' --only "{only_block}"'
         self.run_in_background(self.exec_remote, cmd)
 
     def on_check_coverage(self):
