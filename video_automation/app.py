@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "runpod_api_key": "",
     "openai_api_key": "",
     "openai_base_url": "",
+    "openai_model": "gpt-4o",
     "lumean_api_key": "",
     "royaltechno_api_key": "",
     "lumean_template_id": "01a00ab2-3a8a-716c-b0f5-e205530b39d3",
@@ -352,6 +353,7 @@ class App(tk.Tk):
             ("runpod_api_key", "RunPod API-ключ"),
             ("openai_api_key", "OpenAI (или агрегатор) API-ключ"),
             ("openai_base_url", "OpenAI base URL (необязательно, если не агрегатор)"),
+            ("openai_model", "Модель OpenAI (для CSV/библиотеки/превью/музыки)"),
             ("lumean_api_key", "Lumean API-ключ (озвучка)"),
             ("lumean_template_id", "Lumean template_id (голос)"),
             ("royaltechno_api_key", "RoyalTechno API-ключ (картинки/видео)"),
@@ -733,8 +735,10 @@ class App(tk.Tk):
         blocks_dir = self.get_blocks_dir_or_warn()
         if not blocks_dir:
             return
+        model = self.config_data.get("openai_model") or "gpt-4o"
         cmd = (f'python3 generate_object_library.py --blocks-dir "{blocks_dir}" '
-               f'--master MASTER_ПРОМТ_OBJECT_LIBRARY.txt --output OBJECT_LIBRARY.md')
+               f'--master MASTER_ПРОМТ_OBJECT_LIBRARY.txt --output OBJECT_LIBRARY.md '
+               f'--model "{model}"')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_full_pipeline(self):
@@ -752,9 +756,11 @@ class App(tk.Tk):
         only_block = only_block.strip()
 
         template_id = self.config_data.get("lumean_template_id", "")
+        model = self.config_data.get("openai_model") or "gpt-4o"
         cmd = (f'python3 full_pipeline.py --blocks-dir "{blocks_dir}" '
                f'--library OBJECT_LIBRARY.md --master VEO_3_МАСТЕР_ПРОМТ_КРЕАТИВ.txt '
-               f'--template-id {template_id} --output-dir результаты --start-num 1')
+               f'--template-id {template_id} --output-dir результаты --start-num 1 '
+               f'--csv-model "{model}"')
         if only_block:
             cmd += f' --only "{only_block}"'
         self.run_in_background(self.exec_remote, cmd)
@@ -789,26 +795,32 @@ class App(tk.Tk):
         blocks_dir = self.get_blocks_dir_or_warn()
         if not blocks_dir:
             return
+        model = self.config_data.get("openai_model") or "gpt-4o"
         cmd = (f'python3 generate_thumbnails.py --blocks-dir "{blocks_dir}" '
                f'--library OBJECT_LIBRARY.md --titles-master MASTER_ПРОМТ_THUMBNAIL_TITLES.txt '
-               f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir "{PREVIEW_REMOTE_DIR}"')
+               f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir "{PREVIEW_REMOTE_DIR}" '
+               f'--text-model "{model}"')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_thumbnails_run(self):
         blocks_dir = self.get_blocks_dir_or_warn()
         if not blocks_dir:
             return
+        model = self.config_data.get("openai_model") or "gpt-4o"
         cmd = (f'python3 generate_thumbnails.py --blocks-dir "{blocks_dir}" '
                f'--library OBJECT_LIBRARY.md --titles-master MASTER_ПРОМТ_THUMBNAIL_TITLES.txt '
-               f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir "{PREVIEW_REMOTE_DIR}" --run')
+               f'--images-master MASTER_ПРОМТ_THUMBNAIL_IMAGES.txt --output-dir "{PREVIEW_REMOTE_DIR}" '
+               f'--text-model "{model}" --run')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_generate_music(self):
         blocks_dir = self.get_blocks_dir_or_warn()
         if not blocks_dir:
             return
+        model = self.config_data.get("openai_model") or "gpt-4o"
         cmd = (f'python3 generate_music_prompt.py --blocks-dir "{blocks_dir}" '
-               f'--master MASTER_ПРОМТ_MUSIC.txt --output-dir "{PREVIEW_REMOTE_DIR}"')
+               f'--master MASTER_ПРОМТ_MUSIC.txt --output-dir "{PREVIEW_REMOTE_DIR}" '
+               f'--text-model "{model}"')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_refresh_balance(self):
