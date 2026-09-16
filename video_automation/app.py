@@ -1467,13 +1467,54 @@ class App(tk.Tk):
     # ---------------- генерация через RoyalTechno без RunPod (экономия) ----------------
 
     def on_generate_images_local(self):
+        local_folders = self._list_local_scenario_folders()
+        if local_folders:
+            names = "\n".join(f"- {d.name}" for d in local_folders)
+            use_existing = messagebox.askyesno(
+                "Использовать уже скачанное?",
+                "На компьютере уже есть скачанные файлы сценария (CSV + библиотека):\n"
+                + names +
+                "\n\nИспользовать их СЕЙЧАС, БЕЗ подключения к RunPod?\n\n"
+                "Да - работать с уже скачанными файлами (RunPod включать не нужно).\n"
+                "Нет - выбрать/скачать другой сценарий с RunPod "
+                "(для этого RunPod должен быть включён).")
+            if use_existing:
+                if len(local_folders) == 1:
+                    work_dir = local_folders[0]
+                else:
+                    names_list = [d.name for d in local_folders]
+                    picked = self.ask_text_dialog(
+                        "Какую папку использовать?",
+                        "На компьютере несколько скачанных сценариев. Введи точное "
+                        "название нужной папки:\n" + "\n".join(names_list),
+                        initial_value=names_list[0])
+                    if not picked or picked.strip() not in names_list:
+                        return
+                    work_dir = LOCAL_GENERATION_DIR / picked.strip()
+                self._ask_limit_and_generate_images_local(work_dir=work_dir)
+                return
+
         self.pick_remote_file_async(f"{REMOTE_DIR}/результаты", ".csv",
                                      "Выбери CSV для генерации картинок (шаг A, без RunPod)",
                                      self._on_generate_images_local_picked)
 
+    def _list_local_scenario_folders(self):
+        """Папки внутри local_generation, где уже лежат скачанные CSV и
+        OBJECT_LIBRARY.md - для них RunPod для повторного запуска не нужен."""
+        if not LOCAL_GENERATION_DIR.exists():
+            return []
+        return sorted(
+            d for d in LOCAL_GENERATION_DIR.iterdir()
+            if d.is_dir() and list(d.glob("*.csv")) and (d / "OBJECT_LIBRARY.md").exists())
+
     def _on_generate_images_local_picked(self, csv_name):
         if not csv_name:
             return
+        block_name = csv_name[:-4] if csv_name.endswith(".csv") else csv_name
+        work_dir = LOCAL_GENERATION_DIR / block_name
+        self._ask_limit_and_generate_images_local(work_dir=work_dir, csv_name=csv_name, need_download=True)
+
+    def _ask_limit_and_generate_images_local(self, work_dir, csv_name=None, need_download=False):
         limit_text = self.ask_text_dialog(
             "Сколько сцен обработать?",
             "Для теста введи маленькое число (например 2) - обработаются только первые "
@@ -1492,7 +1533,34 @@ class App(tk.Tk):
                                         "Нужно ввести целое число (например 2), или оставить поле пустым.")
                 return
         self.local_gen_cancel_event.clear()
-        self.run_in_background(self._generate_images_local_task, csv_name, limit)
+        if need_download:
+            self.run_in_background(self._generate_images_local_task, csv_name, limit)
+        else:
+            self.run_in_background(self._generate_images_local_task_from_existing, work_dir, limit)
+
+    def _generate_images_local_task_from_existing(self, work_dir: Path, limit=None):
+        raw_dir = work_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        csv_matches = list(work_dir.glob("*.csv"))
+        if not csv_matches:
+            self.log(f"[!] В {work_dir} не найден CSV.")
+            return
+        local_csv = csv_matches[0]
+        local_library = work_dir / "OBJECT_LIBRARY.md"
+        if not local_library.exists():
+            self.log(f"[!] В {work_dir} не найден OBJECT_LIBRARY.md.")
+            return
+
+        api_key = self.config_data.get("royaltechno_api_key")
+        if not api_key:
+            self.log("ОШИБКА: не задан RoyalTechno API-ключ (вкладка Настройки)")
+            return
+
+        self.log(f"\n>>> Использую уже скачанные файлы из {work_dir} - RunPod не нужен.\n")
+        self.log(f">>> Генерирую картинки (папка: {raw_dir})...\n")
+        generate_images(str(local_csv), str(local_library), str(raw_dir), api_key,
+                         log=self.log, limit=limit, should_stop=lambda: self.local_gen_cancel_event.is_set(),
+                         max_parallel=self.get_royaltechno_max_parallel())
 
     def _generate_images_local_task(self, csv_name, limit=None):
         block_name = csv_name[:-4] if csv_name.endswith(".csv") else csv_name
