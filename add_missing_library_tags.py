@@ -1,14 +1,22 @@
 """
-Добавляет в OBJECT_LIBRARY.md ТОЛЬКО те теги, которых там не хватает —
-вместо того чтобы дорого и долго перегенерировать всю библиотеку заново.
+Автоматически разбирается с недостающими тегами библиотеки — без
+ручного анализа со стороны пользователя.
 
 Находит теги, которые встречаются 2+ раза в ref_tags по всем CSV
 сценария, но отсутствуют в библиотеке (та же логика, что в
-check_library_coverage.py — теги, для которых уже сработал бы нечёткий
-поиск при генерации, пропускаются, их трогать не нужно). Для каждого
-такого тега берёт несколько примеров сцен, где он используется, просит
-ИИ написать ОДНУ запись в том же формате, что и остальная библиотека, и
-дописывает эти записи в конец файла (существующие записи не трогает).
+check_library_coverage.py). Для каждого такого тега спрашивает ИИ
+(с контекстом сцен и полным списком уже существующих тегов), к какому
+из трёх случаев он относится:
+
+  1. EXISTING_MATCH — это на самом деле ТОТ ЖЕ объект, что уже есть в
+     библиотеке, просто написан расплывчато/сокращённо/с опечаткой
+     (например "RIVER" вместо "PRIPYAT_RIVER") - в этом случае скрипт
+     САМ исправляет этот тег во ВСЕХ CSV на точное существующее
+     название, библиотеку не трогает.
+  2. NOT_AN_OBJECT — это вообще не конкретный визуальный объект (голый
+     год, абстрактная тема) - пропускается, ничего не меняется.
+  3. Новая запись — это действительно новый объект - дописывается в
+     конец OBJECT_LIBRARY.md (существующие записи не трогает).
 
 ИСПОЛЬЗОВАНИЕ:
     python3 add_missing_library_tags.py --csv-dir результаты \
@@ -34,6 +42,7 @@ except ImportError:
 TAG_RE = re.compile(r'^([A-Z][A-Z0-9_]{2,})\s*$')
 FUZZY_CUTOFF = 0.72  # то же значение, что использует expand_tags() при реальной генерации
 MAX_CONTEXT_EXAMPLES = 5  # хватит нескольких сцен, не нужны все подряд
+CSV_DELIMITER = ";"
 
 
 def natural_sort_key(path):
@@ -60,7 +69,7 @@ def collect_tag_contexts(csv_dir: Path):
     csv_files = sorted(csv_dir.glob("*.csv"), key=natural_sort_key)
     for csv_path in csv_files:
         with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f, delimiter=";")
+            reader = csv.DictReader(f, delimiter=CSV_DELIMITER)
             for row in reader:
                 ref_tags_field = (row.get("ref_tags") or "").strip()
                 if not ref_tags_field or ref_tags_field == "-":
@@ -91,9 +100,16 @@ def strip_wrapping(text: str) -> str:
     return text.strip()
 
 
-def generate_entry_for_tag(tag, examples, master_prompt, client, model):
+def classify_tag(tag, examples, all_library_tags, master_prompt, client, model):
+    """Возвращает ('existing_match', точный_тег), ('not_an_object', None)
+    или ('new_entry', полный_текст_записи)."""
     context_text = "\n".join(f"- {c}" for c in examples)
-    user_content = f"Тег: {tag}\n\nПримеры сцен, где этот объект упоминается в сценарии:\n{context_text}"
+    tags_list_text = ", ".join(sorted(all_library_tags))
+    user_content = (
+        f"Тег: {tag}\n\n"
+        f"Примеры сцен, где этот тег используется:\n{context_text}\n\n"
+        f"Список уже существующих тегов в библиотеке:\n{tags_list_text}"
+    )
     response = client.chat.completions.create(
         model=model,
         max_completion_tokens=1000,
@@ -102,7 +118,65 @@ def generate_entry_for_tag(tag, examples, master_prompt, client, model):
             {"role": "user", "content": user_content},
         ],
     )
-    return strip_wrapping(response.choices[0].message.content)
+    raw = strip_wrapping(response.choices[0].message.content)
+
+    if raw.upper().startswith("EXISTING_MATCH"):
+        _, _, target = raw.partition(":")
+        target = target.strip()
+        if target in all_library_tags:
+            return "existing_match", target
+        # модель могла чуть исказить название - подстрахуемся нечётким поиском
+        close = difflib.get_close_matches(target, all_library_tags, n=1, cutoff=FUZZY_CUTOFF)
+        if close:
+            return "existing_match", close[0]
+        # не смогли сопоставить ни с чем реальным - считаем, что объект новый
+        return "new_entry", None
+
+    if raw.upper().startswith("NOT_AN_OBJECT"):
+        return "not_an_object", None
+
+    return "new_entry", raw
+
+
+def rename_tag_in_csv_files(csv_files, old_tag, new_tag, log=print):
+    """Заменяет РОВНО этот тег (как отдельный элемент списка ref_tags,
+    не как подстроку!) на новый во всех CSV, где он встречается. Не
+    трогает файлы, где тега вообще нет."""
+    total_rows_changed = 0
+    for csv_path in csv_files:
+        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f, delimiter=CSV_DELIMITER)
+            fieldnames = reader.fieldnames
+            rows = list(reader)
+
+        changed = False
+        for row in rows:
+            ref_tags_field = (row.get("ref_tags") or "").strip()
+            if not ref_tags_field or ref_tags_field == "-":
+                continue
+            parts = [t.strip() for t in ref_tags_field.split(",")]
+            if old_tag not in parts:
+                continue
+            new_parts = [new_tag if p == old_tag else p for p in parts]
+            # убираем возможные дубли, если новый тег там уже и так был
+            seen = set()
+            deduped = []
+            for p in new_parts:
+                if p not in seen:
+                    seen.add(p)
+                    deduped.append(p)
+            row["ref_tags"] = ", ".join(deduped)
+            changed = True
+            total_rows_changed += 1
+
+        if changed:
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=CSV_DELIMITER)
+                writer.writeheader()
+                writer.writerows(rows)
+            log(f"  [i] {csv_path.name}: исправлено строк с '{old_tag}' -> '{new_tag}'")
+
+    return total_rows_changed
 
 
 def main():
@@ -145,24 +219,45 @@ def main():
         missing.append(tag)
 
     if not missing:
-        print("Недостающих тегов (с учётом порога повторов) не найдено - добавлять нечего.")
+        print("Недостающих тегов (с учётом порога повторов) не найдено - делать нечего.")
         return
 
-    print(f"[i] Найдено недостающих тегов: {len(missing)} -> {', '.join(missing)}")
+    print(f"[i] Найдено недостающих тегов: {len(missing)} -> {', '.join(missing)}\n")
 
     new_entries = []
+    renamed = []
+    skipped_not_object = []
+
     for i, tag in enumerate(missing, 1):
-        print(f"[{i}/{len(missing)}] Генерирую запись для '{tag}'...")
-        entry = generate_entry_for_tag(tag, contexts[tag], master_prompt, client, args.model)
-        print(f"  [+] Готово: {entry.splitlines()[0] if entry else '(пусто)'}")
-        new_entries.append(entry)
+        print(f"[{i}/{len(missing)}] Разбираюсь с тегом '{tag}'...")
+        kind, payload = classify_tag(tag, contexts[tag], library_tags, master_prompt, client, args.model)
 
-    with open(library_path, "a", encoding="utf-8") as f:
-        f.write("\n\n")
-        f.write("\n\n".join(new_entries))
-        f.write("\n")
+        if kind == "existing_match":
+            print(f"  [i] '{tag}' - это тот же объект, что уже есть в библиотеке под именем '{payload}'. "
+                  f"Исправляю CSV...")
+            rename_tag_in_csv_files(csv_files, tag, payload, log=print)
+            renamed.append((tag, payload))
+        elif kind == "not_an_object":
+            print(f"  [i] '{tag}' - не конкретный визуальный объект, пропускаю.")
+            skipped_not_object.append(tag)
+        else:
+            print(f"  [+] '{tag}' - новый объект, добавляю запись в библиотеку.")
+            new_entries.append(payload)
 
-    print(f"\nГотово! Добавлено записей: {len(new_entries)}. Файл обновлён: {library_path}")
+    if new_entries:
+        with open(library_path, "a", encoding="utf-8") as f:
+            f.write("\n\n")
+            f.write("\n\n".join(new_entries))
+            f.write("\n")
+
+    print("\n=== ИТОГ ===")
+    print(f"Добавлено новых записей в библиотеку: {len(new_entries)}")
+    if renamed:
+        print(f"Исправлено в CSV (расплывчатый тег -> точный существующий): {len(renamed)}")
+        for old_tag, new_tag in renamed:
+            print(f"  {old_tag} -> {new_tag}")
+    if skipped_not_object:
+        print(f"Пропущено (не объект): {len(skipped_not_object)} -> {', '.join(skipped_not_object)}")
 
 
 if __name__ == "__main__":
