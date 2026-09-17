@@ -346,6 +346,39 @@ class App(tk.Tk):
         ttk.Button(econ_row, text="12. Сборка видео без RunPod", command=self.on_assemble_video_local,
                    width=28).pack(side="left", padx=4)
 
+        # --- очередь генерации картинок без RunPod (несколько блоков сразу) ---
+        local_gen_frame = ttk.LabelFrame(economy_frame,
+                                          text="Очередь генерации картинок без RunPod")
+        local_gen_frame.pack(fill="x", padx=6, pady=6)
+        ttk.Label(local_gen_frame,
+                  text="Названия папок в local_generation через запятую (файлы должны быть уже скачаны - "
+                       "шаг A). Блоки обрабатываются по одному (чтобы не превысить лимит одновременных "
+                       "запросов RoyalTechno) - внутри каждого блока сцены всё равно генерируются "
+                       "параллельно, как настроено в Настройках. Каждый блок продолжится с того места, "
+                       "где остановился, если уже частично сгенерирован - готовые картинки не переделываются.",
+                  foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
+        local_gen_row = ttk.Frame(local_gen_frame)
+        local_gen_row.pack(fill="x", padx=6, pady=(0, 6))
+        self.local_gen_queue_var = tk.StringVar()
+        local_gen_entry = ttk.Entry(local_gen_row, textvariable=self.local_gen_queue_var)
+        local_gen_entry.pack(side="left", fill="x", expand=True)
+        self._add_context_menu(local_gen_entry)
+        ttk.Button(local_gen_row, text="Добавить в очередь",
+                   command=self.on_add_to_local_gen_queue).pack(side="left", padx=(6, 0))
+
+        self.local_gen_tree = ttk.Treeview(local_gen_frame, columns=("status",), show="tree headings", height=5)
+        self.local_gen_tree.heading("#0", text="Блок")
+        self.local_gen_tree.heading("status", text="Статус")
+        self.local_gen_tree.column("#0", width=140)
+        self.local_gen_tree.column("status", width=220)
+        self.local_gen_tree.pack(fill="x", padx=6, pady=(0, 6))
+
+        ttk.Button(local_gen_frame, text="Очистить завершённые",
+                   command=self.on_clear_finished_local_gen_queue).pack(anchor="w", padx=6, pady=(0, 6))
+
+        self.local_gen_queue_semaphore = threading.Semaphore(1)
+        self.local_gen_queue_blocks = set()
+
         # --- очистка субтитров с YouTube (нужен включённый RunPod) ---
         subs_frame = ttk.LabelFrame(frame, text="Исправление субтитров с YouTube (нужен включённый RunPod)")
         subs_frame.pack(fill="x", padx=6, pady=6)
@@ -1617,6 +1650,68 @@ class App(tk.Tk):
         generate_images(str(local_csv), str(local_library), str(raw_dir), api_key,
                          log=self.log, limit=limit, should_stop=lambda: self.local_gen_cancel_event.is_set(),
                          max_parallel=self.get_royaltechno_max_parallel())
+
+    def on_add_to_local_gen_queue(self):
+        raw = self.local_gen_queue_var.get().strip()
+        if not raw:
+            messagebox.showinfo("Не заполнено", "Впиши названия папок (из local_generation) через запятую")
+            return
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+
+        added = 0
+        for name in names:
+            if name in self.local_gen_queue_blocks:
+                continue  # уже в очереди/обрабатывается - не дублируем
+            self.local_gen_queue_blocks.add(name)
+            self.local_gen_tree.insert("", "end", iid=name, text=name, values=("⏳ В очереди",))
+            self.local_gen_cancel_event.clear()
+            self.run_in_background(self._run_queued_local_generation, name)
+            added += 1
+
+        self.local_gen_queue_var.set("")
+        if added:
+            self.log(f"Добавлено в очередь генерации картинок: {added} блок(ов). "
+                      f"Обрабатываются по одному - остальные ждут своей очереди.")
+
+    def _set_local_gen_queue_status(self, name, status):
+        def _update():
+            if self.local_gen_tree.exists(name):
+                self.local_gen_tree.item(name, values=(status,))
+        self.after(0, _update)
+
+    def _run_queued_local_generation(self, name):
+        acquired = False
+        try:
+            waiting_shown = False
+            while not self.local_gen_queue_semaphore.acquire(timeout=3):
+                if not waiting_shown:
+                    self._set_local_gen_queue_status(name, "⏳ Ждёт своей очереди (другой блок уже генерируется)...")
+                    waiting_shown = True
+            acquired = True
+
+            self._set_local_gen_queue_status(name, "🔵 Генерируется...")
+            work_dir = LOCAL_GENERATION_DIR / name
+            self._generate_images_local_task_from_existing(work_dir)
+
+            if self.local_gen_cancel_event.is_set():
+                self._set_local_gen_queue_status(name, "⛔ Остановлено")
+            else:
+                self._set_local_gen_queue_status(name, "✅ Готово")
+        except Exception as e:
+            self.log(f"[{name}] ОШИБКА: {e}")
+            self._set_local_gen_queue_status(name, "❌ Ошибка - смотри журнал")
+        finally:
+            if acquired:
+                self.local_gen_queue_semaphore.release()
+
+    def on_clear_finished_local_gen_queue(self):
+        for name in list(self.local_gen_queue_blocks):
+            if not self.local_gen_tree.exists(name):
+                continue
+            status = self.local_gen_tree.item(name, "values")[0]
+            if status in ("✅ Готово", "⛔ Остановлено") or status.startswith("❌"):
+                self.local_gen_tree.delete(name)
+                self.local_gen_queue_blocks.discard(name)
 
     def _generate_images_local_task(self, csv_name, limit=None):
         block_name = csv_name[:-4] if csv_name.endswith(".csv") else csv_name
