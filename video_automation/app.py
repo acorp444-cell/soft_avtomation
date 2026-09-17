@@ -442,6 +442,42 @@ class App(tk.Tk):
         self.upscale_queue_semaphore = threading.Semaphore(1)
         self.upscale_queue_blocks = set()
 
+        # --- очередь видео без RunPod (шаг C, несколько блоков сразу) ---
+        video_queue_frame = ttk.LabelFrame(economy_frame, text="Очередь видео без RunPod (шаг C)")
+        video_queue_frame.pack(fill="x", padx=6, pady=6)
+        ttk.Label(video_queue_frame,
+                  text="Названия папок из local_generation через запятую (например: хук, 1_блок). "
+                       "Использует те же апскейленные картинки из шага B. Блоки обрабатываются по "
+                       "одному - и с шагом A (картинками) тоже по очереди, а не одновременно, чтобы "
+                       "не превысить лимит одновременных запросов RoyalTechno на аккаунт.",
+                  foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
+
+        video_queue_row = ttk.Frame(video_queue_frame)
+        video_queue_row.pack(fill="x", padx=6, pady=(0, 6))
+        self.video_queue_var = tk.StringVar()
+        video_queue_entry = ttk.Entry(video_queue_row, textvariable=self.video_queue_var)
+        video_queue_entry.pack(side="left", fill="x", expand=True)
+        self._add_context_menu(video_queue_entry)
+        ttk.Button(video_queue_row, text="Добавить в очередь",
+                   command=self.on_add_to_video_queue).pack(side="left", padx=(6, 0))
+
+        self.video_queue_tree = ttk.Treeview(video_queue_frame, columns=("status",),
+                                              show="tree headings", height=5)
+        self.video_queue_tree.heading("#0", text="Блок")
+        self.video_queue_tree.heading("status", text="Статус")
+        self.video_queue_tree.column("#0", width=140)
+        self.video_queue_tree.column("status", width=220)
+        self.video_queue_tree.pack(fill="x", padx=6, pady=(0, 6))
+
+        video_queue_clear_row = ttk.Frame(video_queue_frame)
+        video_queue_clear_row.pack(anchor="w", padx=6, pady=(0, 6))
+        ttk.Button(video_queue_clear_row, text="Очистить завершённые",
+                   command=self.on_clear_finished_video_queue).pack(side="left")
+        ttk.Button(video_queue_clear_row, text="Удалить выбранное из списка",
+                   command=self.on_remove_selected_video_queue).pack(side="left", padx=(6, 0))
+
+        self.video_queue_blocks = set()
+
         # --- очистка субтитров с YouTube (нужен включённый RunPod) ---
         subs_frame = ttk.LabelFrame(frame, text="Исправление субтитров с YouTube (нужен включённый RunPod)")
         subs_frame.pack(fill="x", padx=6, pady=6)
@@ -2071,6 +2107,88 @@ class App(tk.Tk):
             return
         self.local_gen_cancel_event.clear()
         self.run_in_background(self._generate_videos_local_task, Path(local_dir))
+
+    def on_add_to_video_queue(self):
+        raw = self.video_queue_var.get().strip()
+        if not raw:
+            messagebox.showinfo("Не заполнено", "Впиши названия папок (из local_generation) через запятую")
+            return
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+
+        added = 0
+        for name in names:
+            work_dir = LOCAL_GENERATION_DIR / name
+            if not work_dir.exists():
+                self.log(f"[!] '{name}': нет такой папки в local_generation - сначала выполни шаг A.")
+                continue
+            if name in self.video_queue_blocks:
+                continue  # уже в очереди/обрабатывается - не дублируем
+            self.video_queue_blocks.add(name)
+            self.video_queue_tree.insert("", "end", iid=name, text=name, values=("⏳ В очереди",))
+            self.local_gen_cancel_event.clear()
+            self.run_in_background(self._run_queued_video_generation, name)
+            added += 1
+
+        self.video_queue_var.set("")
+        if added:
+            self.log(f"Добавлено в очередь генерации видео: {added} блок(ов). "
+                      f"Обрабатываются по одному (вместе с очередью шага A - используют один и тот "
+                      f"же лимит RoyalTechno) - остальные ждут своей очереди.")
+
+    def _set_video_queue_status(self, name, status):
+        def _update():
+            if self.video_queue_tree.exists(name):
+                self.video_queue_tree.item(name, values=(status,))
+        self.after(0, _update)
+
+    def _run_queued_video_generation(self, name):
+        # используем ТОТ ЖЕ семафор, что и очередь шага A - оба используют
+        # один аккаунт RoyalTechno с одним лимитом одновременных запросов,
+        # так что видео и картинки для разных блоков не должны генерироваться
+        # в одно и то же время
+        acquired = False
+        try:
+            waiting_shown = False
+            while not self.local_gen_queue_semaphore.acquire(timeout=3):
+                if self.local_gen_cancel_event.is_set():
+                    self._set_video_queue_status(name, "⛔ Остановлено")
+                    return
+                if not waiting_shown:
+                    self._set_video_queue_status(name, "⏳ Ждёт своей очереди...")
+                    waiting_shown = True
+            acquired = True
+
+            self._set_video_queue_status(name, "🔵 Генерируется...")
+            self._generate_videos_local_task(LOCAL_GENERATION_DIR / name)
+
+            if self.local_gen_cancel_event.is_set():
+                self._set_video_queue_status(name, "⛔ Остановлено")
+            else:
+                self._set_video_queue_status(name, "✅ Готово")
+        except Exception as e:
+            self.log(f"[{name}] ОШИБКА: {e}")
+            self._set_video_queue_status(name, "❌ Ошибка - смотри журнал")
+        finally:
+            if acquired:
+                self.local_gen_queue_semaphore.release()
+
+    def on_clear_finished_video_queue(self):
+        for name in list(self.video_queue_blocks):
+            if not self.video_queue_tree.exists(name):
+                continue
+            status = self.video_queue_tree.item(name, "values")[0]
+            if status in ("✅ Готово", "⛔ Остановлено") or status.startswith("❌"):
+                self.video_queue_tree.delete(name)
+                self.video_queue_blocks.discard(name)
+
+    def on_remove_selected_video_queue(self):
+        selected = self.video_queue_tree.selection()
+        if not selected:
+            messagebox.showinfo("Не выбрано", "Сначала выдели строку(и) в списке (клик по строке).")
+            return
+        for name in selected:
+            self.video_queue_tree.delete(name)
+            self.video_queue_blocks.discard(name)
 
     def _generate_videos_local_task(self, work_dir: Path):
         upscaled_dir = work_dir / "upscaled"
