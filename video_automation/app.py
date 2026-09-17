@@ -191,20 +191,28 @@ class App(tk.Tk):
         server_frame = ttk.LabelFrame(frame, text="Сервер RunPod")
         server_frame.pack(fill="x", padx=6, pady=6)
 
-        self.status_label = ttk.Label(server_frame, text="Статус: не проверялся")
+        server_btn_row = ttk.Frame(server_frame)
+        server_btn_row.pack(fill="x")
+
+        self.status_label = ttk.Label(server_btn_row, text="Статус: не проверялся")
         self.status_label.pack(side="left", padx=6, pady=6)
 
-        ttk.Button(server_frame, text="Статус", command=self.on_status).pack(side="left", padx=4)
-        ttk.Button(server_frame, text="Включить сервер", command=self.on_start).pack(side="left", padx=4)
-        ttk.Button(server_frame, text="🔑 Обновить ключ", command=self.on_refresh_key).pack(side="left", padx=4)
-        ttk.Button(server_frame, text="Отмена", command=self.on_cancel_start).pack(side="left", padx=4)
-        ttk.Button(server_frame, text="⛔ Остановить генерацию", command=self.on_stop_generation).pack(side="left", padx=4)
-        ttk.Button(server_frame, text="Выключить сервер", command=self.on_stop).pack(side="left", padx=4)
+        ttk.Button(server_btn_row, text="Статус", command=self.on_status).pack(side="left", padx=4)
+        ttk.Button(server_btn_row, text="Включить сервер", command=self.on_start).pack(side="left", padx=4)
+        ttk.Button(server_btn_row, text="🔑 Обновить ключ", command=self.on_refresh_key).pack(side="left", padx=4)
+        ttk.Button(server_btn_row, text="Отмена", command=self.on_cancel_start).pack(side="left", padx=4)
+        ttk.Button(server_btn_row, text="⛔ Остановить генерацию", command=self.on_stop_generation).pack(side="left", padx=4)
+        ttk.Button(server_btn_row, text="Выключить сервер", command=self.on_stop).pack(side="left", padx=4)
 
-        ttk.Checkbutton(server_frame, text="Автовыключение после завершения задач",
-                         variable=self.auto_shutdown_var).pack(side="left", padx=(16, 2))
-        self.auto_shutdown_status_label = ttk.Label(server_frame, text="")
-        self.auto_shutdown_status_label.pack(side="left", padx=2)
+        # отдельная строка под галочку автовыключения - если всё запихнуть
+        # в одну строку с кнопками, на не самом широком окне галочка
+        # обрезается за правый край и её не видно вообще
+        server_auto_row = ttk.Frame(server_frame)
+        server_auto_row.pack(fill="x")
+        ttk.Checkbutton(server_auto_row, text="Автовыключение после завершения задач",
+                         variable=self.auto_shutdown_var).pack(side="left", padx=(6, 2), pady=(0, 6))
+        self.auto_shutdown_status_label = ttk.Label(server_auto_row, text="")
+        self.auto_shutdown_status_label.pack(side="left", padx=2, pady=(0, 6))
         self._update_auto_shutdown_label()
 
         # --- блок баланса ---
