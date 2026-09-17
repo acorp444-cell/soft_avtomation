@@ -45,18 +45,31 @@ TEXT_MODEL = "gpt-4o"
 
 # Проверенный вручную шаблон, который дал нужный результат (см. чат с пользователем).
 # Модель заполняет только {animal}, {texture_detail} и {location_detail} -
-# вся остальная формулировка зафиксирована и не меняется.
+# вся остальная формулировка зафиксирована и не меняется. Уточнён по
+# набору реальных превью, которые пользователь отметил как эталонные:
+# затемнение слева должно быть ЕСТЕСТВЕННЫМ (тень/туман/погода), а не
+# искусственной чёрной заливкой; свечение глаз - правдоподобный
+# фотографический блик, а не магический эффект; добавлены явные запреты
+# на нагромождение/пересыщенность/центрирование, которые были в эталонах.
 THUMBNAIL_TEMPLATE = (
-    "{animal}, extreme close-up portrait filling the right two-thirds of the "
-    "frame, intensely glowing saturated amber orange eyes as the brightest "
-    "and most vivid point in the entire image, strong luminous contrast "
-    "against the dark fur, pupils sharp and catching light like embers, "
-    "intense direct gaze into camera, {texture_detail}, cropped tight at "
-    "the shoulders so the animal dominates the composition, {location_detail}, "
-    "the entire left third of the frame rendered significantly darker and "
-    "underexposed with a heavy black gradient vignette for text overlay, "
-    "documentary realism, cinematic side lighting focused on the animal only, "
-    "muted cold color palette, 16:9, photorealistic, no text, no watermark"
+    "{animal}, close-up portrait filling roughly the right half to two-thirds "
+    "of the frame, intensely glowing saturated amber-orange eyes as the "
+    "brightest and most vivid point in the entire image, strong luminous "
+    "contrast against the fur, looking like a realistic photographic "
+    "catchlight rather than a supernatural or magical glow, pupils sharp and "
+    "catching light like embers, intense direct gaze into camera, "
+    "{texture_detail}, cropped tight at the shoulders so the animal dominates "
+    "the composition, {location_detail}, the left third of the frame kept "
+    "darker and clean using natural shadow, fog or storm-cloud gradient "
+    "rather than an artificial black overlay, reserved for bold text overlay, "
+    "documentary realism, cinematic lighting focused on the animal only, "
+    "muted cold desaturated color palette (blue-grey, steel, dusty brown) "
+    "with the animal's amber eyes as the single warm accent in the whole "
+    "image, 16:9, photorealistic, high detail, composition designed for high "
+    "CTR - subject and background instantly readable even at small "
+    "thumbnail size, animal not centered, no text, no watermark, no logo, "
+    "no fantasy effects, no oversaturation outside the eyes, no cluttered "
+    "composition"
 )
 
 # RoyalTechno API (те же настройки, что в generate_via_api_and_upscale.py)
