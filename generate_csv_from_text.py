@@ -146,7 +146,7 @@ def call_model(voiceover_text, library, master_prompt, duration_sec, start_num,
 
     response = client.chat.completions.create(
         model=model,
-        max_tokens=16384,
+        max_completion_tokens=16384,
         messages=[
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": user_content},

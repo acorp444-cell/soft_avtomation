@@ -251,7 +251,7 @@ def _call_model_once(voiceover_text, library, master_prompt, duration_sec, start
         f"ТЕКСТ ОЗВУЧКИ БЛОКА:\n{voiceover_text}"
     )
     response = client.chat.completions.create(
-        model=model, max_tokens=16384,
+        model=model, max_completion_tokens=16384,
         messages=[
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": user_content},

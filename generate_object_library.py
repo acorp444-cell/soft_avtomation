@@ -88,7 +88,7 @@ def split_blocks_into_chunks(block_files, max_chars):
 def call_model_for_library(script_text, master_prompt, client, model, max_tokens=6000):
     response = client.chat.completions.create(
         model=model,
-        max_tokens=max_tokens,
+        max_completion_tokens=max_tokens,
         messages=[
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": f"ТЕКСТ СЦЕНАРИЯ (может быть частью целого):\n\n{script_text}"},
@@ -123,7 +123,7 @@ def merge_libraries(partial_libraries, master_prompt, client, model):
     combined_drafts = "\n\n=== СЛЕДУЮЩИЙ ЧЕРНОВИК ===\n\n".join(partial_libraries)
     response = client.chat.completions.create(
         model=model,
-        max_tokens=8000,
+        max_completion_tokens=8000,
         messages=[
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": MERGE_INSTRUCTION + "\n\n" + combined_drafts},

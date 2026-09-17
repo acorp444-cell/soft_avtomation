@@ -75,7 +75,7 @@ def generate_music_prompts(full_script: str, master_prompt: str, client, model) 
     script_for_prompt = truncate_for_prompt(full_script, MAX_CHARS_FOR_MUSIC)
     response = client.chat.completions.create(
         model=model,
-        max_tokens=1500,
+        max_completion_tokens=1500,
         messages=[
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": f"ПОЛНЫЙ ТЕКСТ СЦЕНАРИЯ:\n\n{script_for_prompt}"},

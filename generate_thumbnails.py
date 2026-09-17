@@ -128,7 +128,7 @@ def generate_titles(full_script: str, master_prompt: str, client, model) -> list
     script_for_prompt = truncate_for_prompt(full_script, MAX_CHARS_FOR_TITLES)
     response = client.chat.completions.create(
         model=model,
-        max_tokens=2000,
+        max_completion_tokens=2000,
         messages=[
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": f"ПОЛНЫЙ ТЕКСТ СЦЕНАРИЯ:\n\n{script_for_prompt}"},
@@ -146,7 +146,7 @@ def generate_image_prompts(full_script: str, library: str, master_prompt: str, c
     script_for_prompt = truncate_for_prompt(full_script, MAX_CHARS_FOR_IMAGE_PROMPTS)
     response = client.chat.completions.create(
         model=model,
-        max_tokens=4000,
+        max_completion_tokens=4000,
         messages=[
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": (
