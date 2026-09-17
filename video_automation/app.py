@@ -245,6 +245,7 @@ class App(tk.Tk):
             ("2. Озвучка + CSV", self.on_full_pipeline),
             ("3. Проверить CSV (длительность)", self.on_check_coverage),
             ("3б. Проверить CSV (текст)", self.on_check_voiceover_coverage),
+            ("3в. Проверить библиотеку (теги)", self.on_check_library_coverage),
             ("4. Картинки + видео", self.on_generate_media),
             ("5. Превью (текст)", self.on_thumbnails_dry),
             ("5б. Превью (картинки)", self.on_thumbnails_run),
@@ -915,6 +916,10 @@ class App(tk.Tk):
         if not blocks_dir:
             return
         cmd = f'python3 check_voiceover_coverage.py --texts-dir "{blocks_dir}" --csv-dir результаты'
+        self.run_in_background(self.exec_remote, cmd)
+
+    def on_check_library_coverage(self):
+        cmd = 'python3 check_library_coverage.py --csv-dir результаты --library OBJECT_LIBRARY.md'
         self.run_in_background(self.exec_remote, cmd)
 
     def on_generate_media(self):
