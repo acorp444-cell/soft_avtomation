@@ -99,7 +99,7 @@ def parse_library(path):
             section = None
             continue
 
-        if re.match(r'^[A-Z][A-Z &/]+$', line) and '_' not in line:
+        if re.match(r'^[A-Z][A-Z &/]+$', line) and ' ' in line:
             current_obj = None
             section = None
             continue

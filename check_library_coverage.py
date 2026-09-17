@@ -40,7 +40,7 @@ def parse_library_tags(library_path: Path):
     tags = set()
     for line in library_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if TAG_RE.match(line) and "_" in line:
+        if TAG_RE.match(line):
             tags.add(line)
     return tags
 
