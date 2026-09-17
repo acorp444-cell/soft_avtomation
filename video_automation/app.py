@@ -447,9 +447,9 @@ class App(tk.Tk):
         video_queue_frame.pack(fill="x", padx=6, pady=6)
         ttk.Label(video_queue_frame,
                   text="Названия папок из local_generation через запятую (например: хук, 1_блок). "
-                       "Использует те же апскейленные картинки из шага B. Блоки обрабатываются по "
-                       "одному - и с шагом A (картинками) тоже по очереди, а не одновременно, чтобы "
-                       "не превысить лимит одновременных запросов RoyalTechno на аккаунт.",
+                       "Использует те же апскейленные картинки из шага B. Блоки видео обрабатываются "
+                       "по одному между собой, но независимо от очереди шага A (картинок) - в "
+                       "RoyalTechno у картинок и видео разные отдельные лимиты одновременных запросов.",
                   foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
 
         video_queue_row = ttk.Frame(video_queue_frame)
@@ -476,6 +476,7 @@ class App(tk.Tk):
         ttk.Button(video_queue_clear_row, text="Удалить выбранное из списка",
                    command=self.on_remove_selected_video_queue).pack(side="left", padx=(6, 0))
 
+        self.video_queue_semaphore = threading.Semaphore(1)
         self.video_queue_blocks = set()
 
         # --- очистка субтитров с YouTube (нужен включённый RunPod) ---
@@ -2132,8 +2133,8 @@ class App(tk.Tk):
         self.video_queue_var.set("")
         if added:
             self.log(f"Добавлено в очередь генерации видео: {added} блок(ов). "
-                      f"Обрабатываются по одному (вместе с очередью шага A - используют один и тот "
-                      f"же лимит RoyalTechno) - остальные ждут своей очереди.")
+                      f"Обрабатываются по одному - остальные ждут своей очереди "
+                      f"(независимо от очереди картинок шага A).")
 
     def _set_video_queue_status(self, name, status):
         def _update():
@@ -2142,14 +2143,10 @@ class App(tk.Tk):
         self.after(0, _update)
 
     def _run_queued_video_generation(self, name):
-        # используем ТОТ ЖЕ семафор, что и очередь шага A - оба используют
-        # один аккаунт RoyalTechno с одним лимитом одновременных запросов,
-        # так что видео и картинки для разных блоков не должны генерироваться
-        # в одно и то же время
         acquired = False
         try:
             waiting_shown = False
-            while not self.local_gen_queue_semaphore.acquire(timeout=3):
+            while not self.video_queue_semaphore.acquire(timeout=3):
                 if self.local_gen_cancel_event.is_set():
                     self._set_video_queue_status(name, "⛔ Остановлено")
                     return
@@ -2170,7 +2167,7 @@ class App(tk.Tk):
             self._set_video_queue_status(name, "❌ Ошибка - смотри журнал")
         finally:
             if acquired:
-                self.local_gen_queue_semaphore.release()
+                self.video_queue_semaphore.release()
 
     def on_clear_finished_video_queue(self):
         for name in list(self.video_queue_blocks):
