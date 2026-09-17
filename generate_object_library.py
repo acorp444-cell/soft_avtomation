@@ -85,7 +85,7 @@ def split_blocks_into_chunks(block_files, max_chars):
     return chunks
 
 
-def call_model_for_library(script_text, master_prompt, client, model, max_tokens=6000):
+def call_model_for_library(script_text, master_prompt, client, model, max_tokens=12000):
     response = client.chat.completions.create(
         model=model,
         max_completion_tokens=max_tokens,
@@ -97,6 +97,9 @@ def call_model_for_library(script_text, master_prompt, client, model, max_tokens
     finish_reason = response.choices[0].finish_reason
     result_text = response.choices[0].message.content
     print(f"  finish_reason: {finish_reason}, токенов: {response.usage.total_tokens}")
+    if finish_reason == "length":
+        print(f"  [!] ВНИМАНИЕ: ответ обрезан по лимиту токенов (max_completion_tokens={max_tokens}) - "
+              f"черновик библиотеки неполный, увеличь лимит.")
     return strip_wrapping(result_text)
 
 
@@ -121,9 +124,12 @@ MERGE_INSTRUCTION = """
 def merge_libraries(partial_libraries, master_prompt, client, model):
     print(f"Объединяю {len(partial_libraries)} черновиков библиотеки в один...")
     combined_drafts = "\n\n=== СЛЕДУЮЩИЙ ЧЕРНОВИК ===\n\n".join(partial_libraries)
+    # объединённая библиотека должна вместить ВСЕ уникальные теги из ВСЕХ
+    # черновиков - лимита в 8000 не хватало на длинные сценарии (ответ
+    # обрывался на середине), поэтому лимит взят с большим запасом
     response = client.chat.completions.create(
         model=model,
-        max_completion_tokens=8000,
+        max_completion_tokens=24000,
         messages=[
             {"role": "system", "content": master_prompt},
             {"role": "user", "content": MERGE_INSTRUCTION + "\n\n" + combined_drafts},
@@ -132,6 +138,9 @@ def merge_libraries(partial_libraries, master_prompt, client, model):
     finish_reason = response.choices[0].finish_reason
     result_text = response.choices[0].message.content
     print(f"  finish_reason: {finish_reason}, токенов: {response.usage.total_tokens}")
+    if finish_reason == "length":
+        print(f"  [!] ВНИМАНИЕ: итоговая библиотека обрезана по лимиту токенов - "
+              f"файл неполный, нужно ещё увеличить лимит.")
     return strip_wrapping(result_text)
 
 
