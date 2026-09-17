@@ -39,6 +39,7 @@ import argparse
 import base64
 import copy
 import csv
+import difflib
 import glob
 import io
 import json
@@ -176,6 +177,16 @@ def parse_library(path):
     return library
 
 
+def _find_closest_tag(tag, library):
+    """Ищет похожий тег в библиотеке, если точного совпадения нет -
+    например, если модель написала тег с опечаткой или другим написанием
+    (CHERNOBYL вместо CHORNOBYL, лишняя/переставленная буква). Порог 0.72
+    подобран по реальным случаям - ловит такие опечатки, но не путает
+    вообще разные (несуществующие) теги с существующими."""
+    matches = difflib.get_close_matches(tag, library.keys(), n=1, cutoff=0.72)
+    return matches[0] if matches else None
+
+
 def expand_tags(prompt_text, ref_tags_field, library):
     if not ref_tags_field or ref_tags_field.strip() in ("-", ""):
         return prompt_text
@@ -184,6 +195,12 @@ def expand_tags(prompt_text, ref_tags_field, library):
     extras = []
     for tag in tags:
         obj = library.get(tag)
+        if not obj:
+            closest = _find_closest_tag(tag, library)
+            if closest:
+                obj = library.get(closest)
+                print(f"  [i] Тег '{tag}' не найден дословно в OBJECT_LIBRARY.md - "
+                      f"использую похожий тег '{closest}' (возможно, опечатка)")
         if not obj:
             print(f"  [i] Тег '{tag}' не найден в OBJECT_LIBRARY.md - пропускаю "
                   f"(если он должен там быть, но появляется только 1 раз в сценарии, "
