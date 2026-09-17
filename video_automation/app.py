@@ -874,11 +874,28 @@ class App(tk.Tk):
             return  # нажали "Отмена"
         only_block = only_block.strip()
 
+        start_num = "1"
+        if only_block:
+            start_num = self.ask_text_dialog(
+                "С какого номера кадра (num) начать?",
+                "ВАЖНО: при пересборке ОДНОГО блока нумерация кадров (num) "
+                "не продолжается автоматически с предыдущих блоков - если "
+                "оставить 1, номера могут задублироваться с другим блоком "
+                "(например, оба блока получат кадры 1, 2, 3...).\n\n"
+                "Если это первый блок сценария (например 'хук') - оставь 1. "
+                "Если этот блок идёт ПОСЛЕ другого - открой CSV предыдущего "
+                "блока, посмотри последний num там, и впиши сюда число на "
+                "1 больше.",
+                initial_value="1")
+            if start_num is None:
+                return  # нажали "Отмена"
+            start_num = start_num.strip() or "1"
+
         template_id = self.config_data.get("lumean_template_id", "")
         model = self.config_data.get("openai_model") or "gpt-4o"
         cmd = (f'python3 full_pipeline.py --blocks-dir "{blocks_dir}" '
                f'--library OBJECT_LIBRARY.md --master VEO_3_МАСТЕР_ПРОМТ_КРЕАТИВ.txt '
-               f'--template-id {template_id} --output-dir результаты --start-num 1 '
+               f'--template-id {template_id} --output-dir результаты --start-num {start_num} '
                f'--csv-model "{model}"')
         if only_block:
             cmd += f' --only "{only_block}"'
