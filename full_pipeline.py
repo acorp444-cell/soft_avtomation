@@ -330,7 +330,9 @@ def main():
     parser.add_argument("--output-dir", required=True, help="Куда сохранять аудио и CSV")
     parser.add_argument("--start-num", type=int, default=1, help="С какого num начинать первый блок")
     parser.add_argument("--only", type=str, default=None,
-                         help="Обработать только блок с этим именем файла (без .txt) - для теста на одном блоке")
+                         help="Обработать только эти блоки (имена файлов без .txt, можно несколько через "
+                              "запятую) - для теста на одном или нескольких блоках. Порядок обработки всегда "
+                              "по естественному порядку файлов в папке, а не по порядку перечисления.")
     parser.add_argument("--target-frame-sec", type=float, default=9.0,
                          help="Целевая длительность одного кадра в секундах (по умолчанию 9)")
     parser.add_argument("--csv-model", default=CSV_MODEL, help=f"Модель для творческой части (по умолчанию {CSV_MODEL})")
@@ -358,10 +360,13 @@ def main():
 
     block_files = sorted(blocks_dir.glob("*.txt"), key=natural_sort_key)
     if args.only:
-        block_files = [f for f in block_files if f.stem == args.only]
-        if not block_files:
-            print(f"ОШИБКА: блок '{args.only}' не найден в {blocks_dir}")
+        only_names = {n.strip() for n in args.only.split(",") if n.strip()}
+        filtered = [f for f in block_files if f.stem in only_names]
+        missing = only_names - {f.stem for f in filtered}
+        if missing:
+            print(f"ОШИБКА: блок(и) не найден(ы) в {blocks_dir}: {', '.join(sorted(missing))}")
             sys.exit(1)
+        block_files = filtered
     if not block_files:
         print(f"ОШИБКА: в папке {blocks_dir} не найдено .txt файлов")
         sys.exit(1)
