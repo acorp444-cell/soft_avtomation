@@ -17,6 +17,7 @@ video_automation_config.json (рядом с этой программой) - в�
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -351,12 +352,24 @@ class App(tk.Tk):
                                           text="Очередь генерации картинок без RunPod")
         local_gen_frame.pack(fill="x", padx=6, pady=6)
         ttk.Label(local_gen_frame,
-                  text="Названия папок в local_generation через запятую (файлы должны быть уже скачаны - "
-                       "шаг A). Блоки обрабатываются по одному (чтобы не превысить лимит одновременных "
-                       "запросов RoyalTechno) - внутри каждого блока сцены всё равно генерируются "
-                       "параллельно, как настроено в Настройках. Каждый блок продолжится с того места, "
-                       "где остановился, если уже частично сгенерирован - готовые картинки не переделываются.",
+                  text="Названия CSV (можно с .csv или без) через запятую. Блоки обрабатываются по одному "
+                       "(чтобы не превысить лимит одновременных запросов RoyalTechno) - внутри каждого блока "
+                       "сцены всё равно генерируются параллельно, как настроено в Настройках. Каждый блок "
+                       "продолжится с того места, где остановился, если уже частично сгенерирован - готовые "
+                       "картинки не переделываются.",
                   foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
+
+        local_gen_src_row = ttk.Frame(local_gen_frame)
+        local_gen_src_row.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Label(local_gen_src_row, text="Папка с уже скачанными CSV (например, результаты):").pack(
+            side="left", padx=(0, 6))
+        self.local_gen_source_dir_var = tk.StringVar()
+        local_gen_src_entry = ttk.Entry(local_gen_src_row, textvariable=self.local_gen_source_dir_var)
+        local_gen_src_entry.pack(side="left", fill="x", expand=True)
+        self._add_context_menu(local_gen_src_entry)
+        ttk.Button(local_gen_src_row, text="Обзор...",
+                   command=self.on_browse_local_gen_source_dir).pack(side="left", padx=(6, 0))
+
         local_gen_row = ttk.Frame(local_gen_frame)
         local_gen_row.pack(fill="x", padx=6, pady=(0, 6))
         self.local_gen_queue_var = tk.StringVar()
@@ -1651,21 +1664,72 @@ class App(tk.Tk):
                          log=self.log, limit=limit, should_stop=lambda: self.local_gen_cancel_event.is_set(),
                          max_parallel=self.get_royaltechno_max_parallel())
 
+    def on_browse_local_gen_source_dir(self):
+        folder = filedialog.askdirectory(title="Папка с уже скачанными CSV (например, результаты)")
+        if folder:
+            self.local_gen_source_dir_var.set(folder)
+
+    def _prepare_local_gen_block(self, raw_name):
+        """Принимает то, что пользователь ввёл (название CSV, с расширением
+        или без) и возвращает готовое название папки в local_generation -
+        либо уже существующую (скачанную через кнопку A), либо раскладывает
+        файлы туда САМА из папки-источника (поле "Папка с уже скачанными
+        CSV"), чтобы не создавать подпапку под каждый CSV вручную."""
+        block_name = raw_name[:-4] if raw_name.lower().endswith(".csv") else raw_name
+        dest_dir = LOCAL_GENERATION_DIR / block_name
+
+        if dest_dir.exists() and list(dest_dir.glob("*.csv")):
+            return block_name  # уже готово (например, после кнопки A)
+
+        source_dir_raw = self.local_gen_source_dir_var.get().strip()
+        if not source_dir_raw:
+            self.log(f"[!] '{raw_name}': нет такой папки в local_generation, и не выбрана "
+                      f"\"Папка с уже скачанными CSV\" - либо скачай через кнопку A, либо укажи папку-источник.")
+            return None
+
+        source_dir = Path(source_dir_raw)
+        csv_candidate = source_dir / (raw_name if raw_name.lower().endswith(".csv") else f"{raw_name}.csv")
+        if not csv_candidate.exists():
+            self.log(f"[!] '{raw_name}': файл {csv_candidate} не найден в папке-источнике.")
+            return None
+
+        library_candidate = source_dir / "OBJECT_LIBRARY.md"
+        if not library_candidate.exists():
+            library_candidate = source_dir.parent / "OBJECT_LIBRARY.md"
+        if not library_candidate.exists():
+            self.log(f"[!] '{raw_name}': не нашла OBJECT_LIBRARY.md ни в папке-источнике, ни в папке "
+                      f"уровнем выше - скачай библиотеку и положи её туда же.")
+            return None
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_csv = dest_dir / csv_candidate.name
+        if not dest_csv.exists():
+            shutil.copy2(csv_candidate, dest_csv)
+        dest_library = dest_dir / "OBJECT_LIBRARY.md"
+        if not dest_library.exists():
+            shutil.copy2(library_candidate, dest_library)
+
+        self.log(f"[i] '{raw_name}': разложила файлы из папки-источника в {dest_dir}")
+        return block_name
+
     def on_add_to_local_gen_queue(self):
         raw = self.local_gen_queue_var.get().strip()
         if not raw:
-            messagebox.showinfo("Не заполнено", "Впиши названия папок (из local_generation) через запятую")
+            messagebox.showinfo("Не заполнено", "Впиши названия CSV через запятую")
             return
         names = [n.strip() for n in raw.split(",") if n.strip()]
 
         added = 0
-        for name in names:
-            if name in self.local_gen_queue_blocks:
+        for raw_name in names:
+            block_name = self._prepare_local_gen_block(raw_name)
+            if not block_name:
+                continue
+            if block_name in self.local_gen_queue_blocks:
                 continue  # уже в очереди/обрабатывается - не дублируем
-            self.local_gen_queue_blocks.add(name)
-            self.local_gen_tree.insert("", "end", iid=name, text=name, values=("⏳ В очереди",))
+            self.local_gen_queue_blocks.add(block_name)
+            self.local_gen_tree.insert("", "end", iid=block_name, text=block_name, values=("⏳ В очереди",))
             self.local_gen_cancel_event.clear()
-            self.run_in_background(self._run_queued_local_generation, name)
+            self.run_in_background(self._run_queued_local_generation, block_name)
             added += 1
 
         self.local_gen_queue_var.set("")
