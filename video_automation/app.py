@@ -1102,13 +1102,13 @@ class App(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title(title)
-        dialog.geometry("420x140")
+        dialog.minsize(420, 1)  # ширина фиксирована, высота подстроится под текст сама
         dialog.transient(self)
         dialog.grab_set()
         dialog.lift()
         dialog.focus_force()
 
-        ttk.Label(dialog, text=prompt, wraplength=390).pack(fill="x", padx=10, pady=(12, 6))
+        ttk.Label(dialog, text=prompt, wraplength=390, justify="left").pack(fill="x", padx=10, pady=(12, 6))
 
         var = tk.StringVar(value=initial_value)
         entry = ttk.Entry(dialog, textvariable=var, width=45)
