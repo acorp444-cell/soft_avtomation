@@ -246,6 +246,7 @@ class App(tk.Tk):
             ("3. Проверить CSV (длительность)", self.on_check_coverage),
             ("3б. Проверить CSV (текст)", self.on_check_voiceover_coverage),
             ("3в. Проверить библиотеку (теги)", self.on_check_library_coverage),
+            ("3г. Добавить недостающие теги", self.on_add_missing_library_tags),
             ("4. Картинки + видео", self.on_generate_media),
             ("5. Превью (текст)", self.on_thumbnails_dry),
             ("5б. Превью (картинки)", self.on_thumbnails_run),
@@ -920,6 +921,21 @@ class App(tk.Tk):
 
     def on_check_library_coverage(self):
         cmd = 'python3 check_library_coverage.py --csv-dir результаты --library OBJECT_LIBRARY.md'
+        self.run_in_background(self.exec_remote, cmd)
+
+    def on_add_missing_library_tags(self):
+        if not messagebox.askyesno(
+                "Добавить недостающие теги?",
+                "Найдёт теги, которые повторяются 2+ раза в сценарии, но отсутствуют "
+                "в библиотеке, и допишет для них новые записи в конец OBJECT_LIBRARY.md "
+                "(существующие записи не трогает). Стоит немного денег - по одному "
+                "запросу к OpenAI на каждый недостающий тег, не за весь файл заново.\n\n"
+                "Продолжить?"):
+            return
+        model = self.config_data.get("openai_model") or "gpt-4o"
+        cmd = (f'python3 add_missing_library_tags.py --csv-dir результаты '
+               f'--library OBJECT_LIBRARY.md --master MASTER_ПРОМТ_ДОБАВИТЬ_ТЕГ.txt '
+               f'--model "{model}"')
         self.run_in_background(self.exec_remote, cmd)
 
     def on_generate_media(self):
