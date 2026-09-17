@@ -1942,6 +1942,17 @@ class App(tk.Tk):
                 download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(upscaled_dir / filename))
             self.log(f"\nГотово! Скачано апскейленных картинок: {len(matching)}. "
                       f"Теперь можно выключить RunPod и перейти к шагу C.\n")
+
+            # чистим за собой на сервере - иначе общие папки input/output
+            # копят файлы ВСЕХ блоков и прошлых запусков навсегда, и с
+            # каждым разом "апскейл" находит всё больше и больше старых
+            # картинок (даже если реально их пропускает как уже готовые)
+            remote_paths_to_remove = (
+                [f"{COMFYUI_INPUT_REMOTE_DIR}/{f.name}" for f in raw_files]
+                + [f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}" for filename in matching]
+            )
+            quoted = " ".join(f'"{p}"' for p in remote_paths_to_remove)
+            self.exec_remote(f"rm -f {quoted}", prefix="[уборка] ")
         except Exception as e:
             self.log(f"ОШИБКА скачивания результатов: {e}")
 
