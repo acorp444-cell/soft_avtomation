@@ -386,8 +386,12 @@ class App(tk.Tk):
         self.local_gen_tree.column("status", width=220)
         self.local_gen_tree.pack(fill="x", padx=6, pady=(0, 6))
 
-        ttk.Button(local_gen_frame, text="Очистить завершённые",
-                   command=self.on_clear_finished_local_gen_queue).pack(anchor="w", padx=6, pady=(0, 6))
+        local_gen_clear_row = ttk.Frame(local_gen_frame)
+        local_gen_clear_row.pack(anchor="w", padx=6, pady=(0, 6))
+        ttk.Button(local_gen_clear_row, text="Очистить завершённые",
+                   command=self.on_clear_finished_local_gen_queue).pack(side="left")
+        ttk.Button(local_gen_clear_row, text="Удалить выбранное из списка",
+                   command=self.on_remove_selected_local_gen_queue).pack(side="left", padx=(6, 0))
 
         self.local_gen_queue_semaphore = threading.Semaphore(1)
         self.local_gen_queue_blocks = set()
@@ -1748,6 +1752,11 @@ class App(tk.Tk):
         try:
             waiting_shown = False
             while not self.local_gen_queue_semaphore.acquire(timeout=3):
+                if self.local_gen_cancel_event.is_set():
+                    # ждущий блок ещё даже не начинался - нет смысла ждать
+                    # своей очереди, если генерацию уже остановили
+                    self._set_local_gen_queue_status(name, "⛔ Остановлено")
+                    return
                 if not waiting_shown:
                     self._set_local_gen_queue_status(name, "⏳ Ждёт своей очереди (другой блок уже генерируется)...")
                     waiting_shown = True
@@ -1776,6 +1785,20 @@ class App(tk.Tk):
             if status in ("✅ Готово", "⛔ Остановлено") or status.startswith("❌"):
                 self.local_gen_tree.delete(name)
                 self.local_gen_queue_blocks.discard(name)
+
+    def on_remove_selected_local_gen_queue(self):
+        """Убирает выделенные строки из списка немедленно, независимо от
+        статуса - на случай, если блок завис в "генерируется"/"ждёт
+        очереди" и не хочется ждать, пока он сам дойдёт до "остановлено"
+        (это только чистит список, саму генерацию всё равно останавливает
+        кнопка "⛔ Остановить генерацию")."""
+        selected = self.local_gen_tree.selection()
+        if not selected:
+            messagebox.showinfo("Не выбрано", "Сначала выдели строку(и) в списке (клик по строке).")
+            return
+        for name in selected:
+            self.local_gen_tree.delete(name)
+            self.local_gen_queue_blocks.discard(name)
 
     def _generate_images_local_task(self, csv_name, limit=None):
         block_name = csv_name[:-4] if csv_name.endswith(".csv") else csv_name
