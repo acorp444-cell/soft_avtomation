@@ -201,9 +201,15 @@ class App(tk.Tk):
         ttk.Button(server_btn_row, text="Статус", command=self.on_status).pack(side="left", padx=4)
         ttk.Button(server_btn_row, text="Включить сервер", command=self.on_start).pack(side="left", padx=4)
         ttk.Button(server_btn_row, text="🔑 Обновить ключ", command=self.on_refresh_key).pack(side="left", padx=4)
-        ttk.Button(server_btn_row, text="Отмена", command=self.on_cancel_start).pack(side="left", padx=4)
-        ttk.Button(server_btn_row, text="⛔ Остановить генерацию", command=self.on_stop_generation).pack(side="left", padx=4)
-        ttk.Button(server_btn_row, text="Выключить сервер", command=self.on_stop).pack(side="left", padx=4)
+
+        # вторая строка под остальные кнопки - если всё запихнуть в одну
+        # строку, на не самом широком окне часть кнопок (например
+        # "Выключить сервер") уезжает за правый край и её не видно
+        server_btn_row2 = ttk.Frame(server_frame)
+        server_btn_row2.pack(fill="x")
+        ttk.Button(server_btn_row2, text="Отмена", command=self.on_cancel_start).pack(side="left", padx=4, pady=(0, 4))
+        ttk.Button(server_btn_row2, text="⛔ Остановить генерацию", command=self.on_stop_generation).pack(side="left", padx=4, pady=(0, 4))
+        ttk.Button(server_btn_row2, text="Выключить сервер", command=self.on_stop).pack(side="left", padx=4, pady=(0, 4))
 
         # отдельная строка под галочку автовыключения - если всё запихнуть
         # в одну строку с кнопками, на не самом широком окне галочка
