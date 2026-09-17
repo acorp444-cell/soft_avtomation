@@ -404,6 +404,44 @@ class App(tk.Tk):
         self.local_gen_queue_semaphore = threading.Semaphore(1)
         self.local_gen_queue_blocks = set()
 
+        # --- очередь апскейла на RunPod (шаг B, несколько блоков сразу) ---
+        upscale_queue_frame = ttk.LabelFrame(economy_frame, text="Очередь апскейла на RunPod (шаг B)")
+        upscale_queue_frame.pack(fill="x", padx=6, pady=6)
+        ttk.Label(upscale_queue_frame,
+                  text="Названия папок из local_generation через запятую (например: хук, 1_блок). "
+                       "Блоки апскейлятся по одному - видеокарта на сервере всё равно одна и "
+                       "обрабатывает картинки строго по очереди, параллельность тут ничего не ускорит, "
+                       "зато может всё перепутать в общей папке на сервере. Зато не нужно вручную "
+                       "нажимать B для каждого блока и ждать - впиши все сразу и уходи.",
+                  foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
+
+        upscale_queue_row = ttk.Frame(upscale_queue_frame)
+        upscale_queue_row.pack(fill="x", padx=6, pady=(0, 6))
+        self.upscale_queue_var = tk.StringVar()
+        upscale_queue_entry = ttk.Entry(upscale_queue_row, textvariable=self.upscale_queue_var)
+        upscale_queue_entry.pack(side="left", fill="x", expand=True)
+        self._add_context_menu(upscale_queue_entry)
+        ttk.Button(upscale_queue_row, text="Добавить в очередь",
+                   command=self.on_add_to_upscale_queue).pack(side="left", padx=(6, 0))
+
+        self.upscale_queue_tree = ttk.Treeview(upscale_queue_frame, columns=("status",),
+                                                show="tree headings", height=5)
+        self.upscale_queue_tree.heading("#0", text="Блок")
+        self.upscale_queue_tree.heading("status", text="Статус")
+        self.upscale_queue_tree.column("#0", width=140)
+        self.upscale_queue_tree.column("status", width=220)
+        self.upscale_queue_tree.pack(fill="x", padx=6, pady=(0, 6))
+
+        upscale_queue_clear_row = ttk.Frame(upscale_queue_frame)
+        upscale_queue_clear_row.pack(anchor="w", padx=6, pady=(0, 6))
+        ttk.Button(upscale_queue_clear_row, text="Очистить завершённые",
+                   command=self.on_clear_finished_upscale_queue).pack(side="left")
+        ttk.Button(upscale_queue_clear_row, text="Удалить выбранное из списка",
+                   command=self.on_remove_selected_upscale_queue).pack(side="left", padx=(6, 0))
+
+        self.upscale_queue_semaphore = threading.Semaphore(1)
+        self.upscale_queue_blocks = set()
+
         # --- очистка субтитров с YouTube (нужен включённый RunPod) ---
         subs_frame = ttk.LabelFrame(frame, text="Исправление субтитров с YouTube (нужен включённый RunPod)")
         subs_frame.pack(fill="x", padx=6, pady=6)
@@ -1903,6 +1941,75 @@ class App(tk.Tk):
         if not local_dir:
             return
         self.run_in_background(self._upscale_on_runpod_task, Path(local_dir))
+
+    def on_add_to_upscale_queue(self):
+        raw = self.upscale_queue_var.get().strip()
+        if not raw:
+            messagebox.showinfo("Не заполнено", "Впиши названия папок (из local_generation) через запятую")
+            return
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+
+        added = 0
+        for name in names:
+            work_dir = LOCAL_GENERATION_DIR / name
+            if not work_dir.exists():
+                self.log(f"[!] '{name}': нет такой папки в local_generation - сначала выполни шаг A.")
+                continue
+            if name in self.upscale_queue_blocks:
+                continue  # уже в очереди/обрабатывается - не дублируем
+            self.upscale_queue_blocks.add(name)
+            self.upscale_queue_tree.insert("", "end", iid=name, text=name, values=("⏳ В очереди",))
+            self.run_in_background(self._run_queued_upscale, name)
+            added += 1
+
+        self.upscale_queue_var.set("")
+        if added:
+            self.log(f"Добавлено в очередь апскейла: {added} блок(ов). "
+                      f"Обрабатываются по одному - остальные ждут своей очереди.")
+
+    def _set_upscale_queue_status(self, name, status):
+        def _update():
+            if self.upscale_queue_tree.exists(name):
+                self.upscale_queue_tree.item(name, values=(status,))
+        self.after(0, _update)
+
+    def _run_queued_upscale(self, name):
+        acquired = False
+        try:
+            waiting_shown = False
+            while not self.upscale_queue_semaphore.acquire(timeout=3):
+                if not waiting_shown:
+                    self._set_upscale_queue_status(name, "⏳ Ждёт своей очереди (другой блок апскейлится)...")
+                    waiting_shown = True
+            acquired = True
+
+            self._set_upscale_queue_status(name, "🔵 Апскейлится...")
+            self._upscale_on_runpod_task(LOCAL_GENERATION_DIR / name)
+            self._set_upscale_queue_status(name, "✅ Готово")
+        except Exception as e:
+            self.log(f"[{name}] ОШИБКА: {e}")
+            self._set_upscale_queue_status(name, "❌ Ошибка - смотри журнал")
+        finally:
+            if acquired:
+                self.upscale_queue_semaphore.release()
+
+    def on_clear_finished_upscale_queue(self):
+        for name in list(self.upscale_queue_blocks):
+            if not self.upscale_queue_tree.exists(name):
+                continue
+            status = self.upscale_queue_tree.item(name, "values")[0]
+            if status == "✅ Готово" or status.startswith("❌"):
+                self.upscale_queue_tree.delete(name)
+                self.upscale_queue_blocks.discard(name)
+
+    def on_remove_selected_upscale_queue(self):
+        selected = self.upscale_queue_tree.selection()
+        if not selected:
+            messagebox.showinfo("Не выбрано", "Сначала выдели строку(и) в списке (клик по строке).")
+            return
+        for name in selected:
+            self.upscale_queue_tree.delete(name)
+            self.upscale_queue_blocks.discard(name)
 
     def _upscale_on_runpod_task(self, work_dir: Path):
         raw_dir = work_dir / "raw"
