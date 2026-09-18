@@ -48,6 +48,23 @@ from pathlib import Path
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 25
 
+# По умолчанию - обычное программное кодирование (работает везде, в том
+# числе на RunPod, где нет Intel-видеокарты). На слабом ПК можно включить
+# --hw-encoder qsv/nvenc/amf, если ffmpeg такое поддерживает - тогда
+# кодирование считает видеокарта, а не процессор, и работает намного быстрее.
+VIDEO_CODEC = "libx264"
+EXTRA_ENCODE_ARGS = []
+
+HW_ENCODER_QUALITY_ARGS = {
+    "qsv": ["-global_quality", "23"],
+    "nvenc": ["-preset", "p4", "-cq", "23"],
+    "amf": ["-quality", "balanced", "-qp_i", "23", "-qp_p", "23"],
+}
+
+
+def _codec_args():
+    return ["-c:v", VIDEO_CODEC] + EXTRA_ENCODE_ARGS
+
 # Принудительно делаем вывод построчным (без буферизации). По умолчанию,
 # когда Python печатает не в настоящий терминал, а в трубу (как при
 # запуске через SSH), он копит вывод пачками по несколько КБ перед
@@ -132,7 +149,7 @@ def build_kenburns_clip(image_path: Path, duration_sec: float, output_path: Path
     return run_ffmpeg([
         "-loop", "1", "-i", str(image_path),
         "-vf", vf, "-t", str(duration_sec),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        *_codec_args(), "-pix_fmt", "yuv420p",
         str(output_path),
     ], f"Ken Burns {image_path.name}")
 
@@ -144,7 +161,7 @@ def trim_video(input_path: Path, duration_sec: float, output_path: Path):
     return run_ffmpeg([
         "-i", str(input_path), "-t", str(duration_sec),
         "-vf", SCALE_CROP_VF,
-        "-c:v", "libx264", "-an",
+        *_codec_args(), "-an",
         str(output_path),
     ], f"обрезка {input_path.name}")
 
@@ -155,7 +172,7 @@ def full_video_reencoded(input_path: Path, output_path: Path):
     return run_ffmpeg([
         "-i", str(input_path),
         "-vf", SCALE_CROP_VF,
-        "-c:v", "libx264", "-an",
+        *_codec_args(), "-an",
         str(output_path),
     ], f"перекодирование {input_path.name}")
 
@@ -179,7 +196,7 @@ def stretch_video_to_duration(input_path: Path, target_duration: float, output_p
     return run_ffmpeg([
         "-i", str(input_path),
         "-vf", vf,
-        "-c:v", "libx264", "-an",
+        *_codec_args(), "-an",
         str(output_path),
     ], f"замедление {input_path.name} до {target_duration:.1f} сек")
 
@@ -198,7 +215,7 @@ def freeze_last_frame_clip(input_path: Path, freeze_duration: float, output_path
             "-loop", "1", "-i", str(last_frame),
             "-t", str(freeze_duration),
             "-vf", SCALE_CROP_VF,
-            "-c:v", "libx264",
+            *_codec_args(),
             str(output_path),
         ], "заморозка кадра")
 
@@ -354,7 +371,7 @@ def concat_clips(clip_paths, output_path: Path):
             # запасной путь - переклеить с перекодированием, если copy не сработал
             ok = run_ffmpeg([
                 "-f", "concat", "-safe", "0", "-i", list_path,
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(output_path),
+                *_codec_args(), "-pix_fmt", "yuv420p", str(output_path),
             ], "склейка частей кадра (перекодирование)")
         return output_path if ok else None
     finally:
@@ -377,7 +394,7 @@ def xfade_pair(clip_a: Path, duration_a: float, clip_b: Path, transition_duratio
         "-i", str(clip_a), "-i", str(clip_b),
         "-filter_complex", filter_complex,
         "-map", "[vout]",
-        "-c:v", "libx264",
+        *_codec_args(),
         str(output_path),
     ], f"переход между кадрами")
 
@@ -441,7 +458,16 @@ def main():
                          help="Доп. папка для поиска картинок/видео (например, если картинки и "
                               "видео скачаны в разные папки - сначала ищем в --media-dir, потом тут)")
     parser.add_argument("--output", required=True, help="Куда сохранить готовое видео блока")
+    parser.add_argument("--hw-encoder", choices=["none", "qsv", "nvenc", "amf"], default="none",
+                         help="Кодировать через видеокарту вместо процессора (сильно быстрее, если "
+                              "поддерживается) - none/qsv (Intel)/nvenc (NVIDIA)/amf (AMD)")
     args = parser.parse_args()
+
+    if args.hw_encoder != "none":
+        global VIDEO_CODEC, EXTRA_ENCODE_ARGS
+        VIDEO_CODEC = f"h264_{args.hw_encoder}"
+        EXTRA_ENCODE_ARGS = HW_ENCODER_QUALITY_ARGS[args.hw_encoder]
+        print(f"[i] Аппаратное кодирование включено: {VIDEO_CODEC}")
 
     csv_path = Path(args.csv)
     audio_path = Path(args.audio)

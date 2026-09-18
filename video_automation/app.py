@@ -50,6 +50,7 @@ DEFAULT_CONFIG = {
     "royaltechno_api_key": "",
     "royaltechno_max_parallel": "3",
     "lumean_template_id": "01a00ab2-3a8a-716c-b0f5-e205530b39d3",
+    "hw_encoder": "none",
 }
 
 
@@ -555,6 +556,20 @@ class App(tk.Tk):
             settings_entry = ttk.Entry(row, textvariable=var, width=50, show=show)
             settings_entry.pack(side="left", fill="x", expand=True)
             self._add_context_menu(settings_entry)
+
+        hw_row = ttk.Frame(frame)
+        hw_row.pack(fill="x", padx=10, pady=4)
+        ttk.Label(hw_row, text="Сборка видео (кнопка 12): кодирование через видеокарту", width=38).pack(side="left")
+        hw_var = tk.StringVar(value=self.config_data.get("hw_encoder", "none"))
+        self.settings_vars["hw_encoder"] = hw_var
+        hw_combo = ttk.Combobox(hw_row, textvariable=hw_var, width=47, state="readonly",
+                                 values=["none", "qsv", "nvenc", "amf"])
+        hw_combo.pack(side="left")
+        ttk.Label(frame,
+                  text="none - обычное кодирование процессором (медленнее, но работает всегда). "
+                       "qsv - Intel Quick Sync, nvenc - NVIDIA, amf - AMD: сильно быстрее, но нужно "
+                       "сначала проверить, что видеокарта это реально поддерживает (спроси, если не уверена).",
+                  foreground="#888888", wraplength=600).pack(anchor="w", padx=10, pady=(0, 4))
 
         ttk.Button(frame, text="Сохранить настройки", command=self.on_save_settings).pack(pady=16)
 
@@ -2325,9 +2340,10 @@ class App(tk.Tk):
 
         script_path = Path(__file__).resolve().parent / "assemble_block_video.py"
         output_path = work_dir / f"{block_name}_edit.mp4"
+        hw_encoder = self.config_data.get("hw_encoder", "none")
         args = ["--csv", local_csv, "--audio", audio_path,
                 "--media-dir", upscaled_dir, "--media-dir2", video_dir,
-                "--output", output_path]
+                "--output", output_path, "--hw-encoder", hw_encoder]
 
         self.log(f"\n>>> Собираю видео блока (папка: {work_dir})...\n")
         exit_code = self._run_local_python_script(script_path, args)
