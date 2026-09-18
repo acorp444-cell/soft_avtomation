@@ -121,7 +121,11 @@ def build_kenburns_clip(image_path: Path, duration_sec: float, output_path: Path
     frames = max(1, round(duration_sec * FPS))
     zoom_per_frame = (end_zoom - start_zoom) / frames
     vf = (
-        f"scale=8000:-1,"
+        # 3840 (2х ширины итогового видео) с запасом хватает для плавного
+        # зума 104%-115% без пикселизации - 8000 только сильно грузил
+        # zoompan (и так один из самых медленных фильтров ffmpeg) без
+        # заметной разницы в качестве
+        f"scale=3840:-1,"
         f"zoompan=z='{start_zoom}+{zoom_per_frame}*on':d={frames}:"
         f"s={WIDTH}x{HEIGHT}:fps={FPS},format=yuv420p"
     )
