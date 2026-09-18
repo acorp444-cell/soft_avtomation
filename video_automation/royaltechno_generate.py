@@ -421,10 +421,19 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
     counters = {"done": 0, "skipped": 0, "failed": 0}
     counters_lock = threading.Lock()
 
+    infographic_skipped = 0
     tasks = []
     for row in rows:
         num = row.get("num", "").strip()
         if not num:
+            continue
+        # картинки-инфографику (source=AI_INFOGRAPHIC) генерирует не
+        # RoyalTechno, а OpenAI (заметно лучше рисует читаемый текст) -
+        # это происходит отдельно, на RunPod, во время шага B (апскейл),
+        # здесь их только пропускаем, чтобы не тратить деньги RoyalTechno
+        # на заведомо не тот результат
+        if (row.get("source") or "").strip() == "AI_INFOGRAPHIC":
+            infographic_skipped += 1
             continue
         ref_tags = row.get("ref_tags", "").strip()
         for which, col in (("img1", "img_prompt_1"), ("img2", "img_prompt_2")):
@@ -433,6 +442,10 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
                 continue
             raw_path = os.path.join(output_dir, f"{num}_{which}_raw.jpg")
             tasks.append((num, which, base_prompt, ref_tags, raw_path))
+
+    if infographic_skipped:
+        log(f"[i] Кадров с инфографикой (source=AI_INFOGRAPHIC): {infographic_skipped} - "
+            f"пропускаю здесь, они генерируются через OpenAI на шаге B")
 
     def process_one(task):
         num, which, base_prompt, ref_tags, raw_path = task

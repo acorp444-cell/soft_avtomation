@@ -14,6 +14,7 @@ video_automation_config.json (рядом с этой программой) - в�
 Файлы runpod_controller.py и ssh_runner.py должны лежать в той же папке.
 """
 
+import csv
 import json
 import os
 import queue
@@ -2110,7 +2111,26 @@ class App(tk.Tk):
         upscaled_dir.mkdir(parents=True, exist_ok=True)
 
         raw_files = [f for f in raw_dir.iterdir() if f.is_file()] if raw_dir.exists() else []
-        if not raw_files:
+
+        # картинки-инфографику (source=AI_INFOGRAPHIC) шаг A на компьютере
+        # НЕ генерирует вообще - OpenAI заблокирован по региону напрямую с
+        # домашнего интернета - они генерируются здесь, на сервере, перед
+        # апскейлом (RunPod и так уже включён ради апскейла)
+        csv_matches = list(work_dir.glob("*.csv"))
+        infographic_nums = set()
+        if csv_matches:
+            try:
+                with open(csv_matches[0], "r", encoding="utf-8-sig", newline="") as f:
+                    reader = csv.DictReader(f, delimiter=";")
+                    for row in reader:
+                        if (row.get("source") or "").strip() == "AI_INFOGRAPHIC":
+                            num = (row.get("num") or "").strip()
+                            if num:
+                                infographic_nums.add(num)
+            except Exception as e:
+                self.log(f"[!] Не удалось прочитать CSV для проверки инфографики: {e}")
+
+        if not raw_files and not infographic_nums:
             self.log(f"[!] В {raw_dir} нет сырых картинок - сначала выполни шаг A.")
             return
 
@@ -2120,12 +2140,25 @@ class App(tk.Tk):
             self.log(f"ОШИБКА подключения: {e}")
             return
 
-        self.log(f"\n>>> Загружаю {len(raw_files)} сырых картинок на RunPod...\n")
-        try:
-            upload_directory(client, str(raw_dir), COMFYUI_INPUT_REMOTE_DIR, on_output=self.log)
-        except Exception as e:
-            self.log(f"ОШИБКА загрузки: {e}")
-            return
+        if raw_files:
+            self.log(f"\n>>> Загружаю {len(raw_files)} сырых картинок на RunPod...\n")
+            try:
+                upload_directory(client, str(raw_dir), COMFYUI_INPUT_REMOTE_DIR, on_output=self.log)
+            except Exception as e:
+                self.log(f"ОШИБКА загрузки: {e}")
+                return
+
+        infographic_prefixes = set()
+        if infographic_nums:
+            block_name = csv_matches[0].stem
+            self.log(f"\n>>> Генерирую недостающие картинки-инфографику через OpenAI "
+                      f"({len(infographic_nums)} кадр(ов))...\n")
+            cmd = (f'python3 generate_infographic_images_openai.py '
+                   f'--csv "результаты/{block_name}.csv" --output-dir "{COMFYUI_INPUT_REMOTE_DIR}"')
+            self.exec_remote(cmd)
+            for num in infographic_nums:
+                infographic_prefixes.add(f"{num}_img1")
+                infographic_prefixes.add(f"{num}_img2")
 
         self.log("\n>>> Запускаю апскейл на сервере (видеокарта нужна только для этого шага)...\n")
         cmd = (f'python3 upscale_batch.py --input-dir "{COMFYUI_INPUT_REMOTE_DIR}" '
@@ -2134,9 +2167,10 @@ class App(tk.Tk):
 
         self.log(f"\n>>> Скачиваю результаты апскейла в {upscaled_dir}...\n")
         try:
-            prefixes = {f.stem.replace("_raw", "") for f in raw_files}
+            local_prefixes = {f.stem.replace("_raw", "") for f in raw_files}
+            all_prefixes = local_prefixes | infographic_prefixes
             remote_files = list_remote_files(client, COMFYUI_OUTPUT_REMOTE_DIR, ".png")
-            matching = [f for f in remote_files if any(f.startswith(p + "_") for p in prefixes)]
+            matching = [f for f in remote_files if any(f.startswith(p + "_") for p in all_prefixes)]
             for i, filename in enumerate(matching, 1):
                 self.log(f"  [{i}/{len(matching)}] {filename}...")
                 download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(upscaled_dir / filename))
@@ -2149,6 +2183,7 @@ class App(tk.Tk):
             # картинок (даже если реально их пропускает как уже готовые)
             remote_paths_to_remove = (
                 [f"{COMFYUI_INPUT_REMOTE_DIR}/{f.name}" for f in raw_files]
+                + [f"{COMFYUI_INPUT_REMOTE_DIR}/{p}_raw.jpg" for p in infographic_prefixes]
                 + [f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}" for filename in matching]
             )
             quoted = " ".join(f'"{p}"' for p in remote_paths_to_remove)
