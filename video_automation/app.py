@@ -79,6 +79,7 @@ class App(tk.Tk):
             self.state("zoomed")  # разворачиваем на весь экран (Windows)
         except tk.TclError:
             pass
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         self.config_data = load_config()
         self.output_queue = queue.Queue()
@@ -804,6 +805,32 @@ class App(tk.Tk):
     def on_cancel_start(self):
         self.cancel_start_event.set()
         self.log("Отмена запрошена - остановлюсь на следующей проверке...")
+
+    def on_closing(self):
+        """Вызывается при закрытии окна программы (крестик). Локальные
+        процессы (например сборка видео) - отдельные программы на этом
+        компьютере, они НЕ останавливаются сами просто от закрытия окна
+        (иначе останутся висеть в фоне) - убиваем их явно. RunPod - это
+        сервер в облаке, он вообще не связан с тем, открыта эта программа
+        или нет - если не выключить его отдельно, он продолжит работать
+        (и тратить деньги), даже когда программа закрыта."""
+        with self.local_process_lock:
+            local_processes = list(self.active_local_processes)
+        if local_processes:
+            for process in local_processes:
+                self._kill_local_process_tree(process)
+
+        status_text = self.status_label.cget("text")
+        if "RUNNING" in status_text:
+            if not messagebox.askyesno(
+                    "RunPod всё ещё включён",
+                    "Судя по последней проверке статуса, сервер RunPod ещё работает. "
+                    "Закрытие ЭТОЙ программы его НЕ выключает - деньги продолжат "
+                    "списываться, пока не выключишь его отдельно (кнопкой "
+                    "\"Выключить сервер\" или галочкой автовыключения).\n\n"
+                    "Всё равно закрыть программу, не выключая сервер?"):
+                return  # не закрываем - дали передумать
+        self.destroy()
 
     def on_stop_generation(self):
         if not messagebox.askyesno(
