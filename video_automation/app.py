@@ -97,6 +97,11 @@ class App(tk.Tk):
         # --- отмена локальной генерации через RoyalTechno (без RunPod) ---
         self.local_gen_cancel_event = threading.Event()
 
+        # --- локальные питон-скрипты (сборка видео и т.п.) - чтобы кнопка
+        # "Остановить генерацию" могла их прибить, а не только серверные ---
+        self.active_local_processes = []
+        self.local_process_lock = threading.Lock()
+
         self._build_ui()
         self.after(100, self._poll_output_queue)
         self.after(200, self._set_initial_sash_position)
@@ -821,6 +826,15 @@ class App(tk.Tk):
         local_stopped = cancel_all_local_transfers()
         if local_stopped:
             self.log(f"\n>>> Остановлено локальных операций (скачивание/загрузка): {local_stopped}\n")
+
+        # локальные питон-скрипты (например сборка видео кнопкой 12) - тоже
+        # выполняются на этом компьютере, серверный pkill их не видит
+        with self.local_process_lock:
+            local_processes = list(self.active_local_processes)
+        if local_processes:
+            self.log(f"\n>>> Останавливаю локальных процессов (сборка видео и т.п.): {len(local_processes)}...\n")
+            for process in local_processes:
+                self._kill_local_process_tree(process)
 
         # известные скрипты пайплайна - завершаем все сразу, безопасно
         # (если какой-то не запущен - pkill просто ничего не найдёт, не ошибка)
@@ -2299,11 +2313,31 @@ class App(tk.Tk):
         except FileNotFoundError as e:
             self.log(f"{prefix}ОШИБКА запуска: {e}")
             return 1
-        for line in process.stdout:
-            self.log(f"{prefix}{line.rstrip()}")
-        exit_code = process.wait()
+        with self.local_process_lock:
+            self.active_local_processes.append(process)
+        try:
+            for line in process.stdout:
+                self.log(f"{prefix}{line.rstrip()}")
+            exit_code = process.wait()
+        finally:
+            with self.local_process_lock:
+                if process in self.active_local_processes:
+                    self.active_local_processes.remove(process)
         self.log(f"\n{prefix}[завершено, код: {exit_code}]\n")
         return exit_code
+
+    def _kill_local_process_tree(self, process):
+        """Убивает локальный скрипт (например сборку видео) вместе со ВСЕМИ
+        его дочерними процессами (ffmpeg) - простой process.terminate()
+        этого не делает на Windows, дочерний ffmpeg остался бы висеть."""
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                                capture_output=True)
+            else:
+                process.terminate()
+        except Exception as e:
+            self.log(f"[!] Не удалось остановить локальный процесс {process.pid}: {e}")
 
     def _assemble_video_local_task(self, work_dir: Path):
         csv_matches = list(work_dir.glob("*.csv"))
