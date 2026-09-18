@@ -194,7 +194,7 @@ def _find_low_quality_nums(result: dict) -> set:
 
 
 def generate_creative_fields(frames_group: list, library: str, master_prompt: str,
-                              client, model: str, max_retries: int = 2):
+                              client, model: str, block_name: str = "", max_retries: int = 2):
     """Отправляет группу уже готовых кадров (num + voiceover_ru) модели,
     получает творческие поля для каждого. Возвращает словарь {num: {поля}}.
     Проверяет, что вернулись строки на ВСЕ переданные num, что нет
@@ -215,6 +215,7 @@ def generate_creative_fields(frames_group: list, library: str, master_prompt: st
             f"[{f['num']}] {f['voiceover_ru']}" for f in pending
         )
         user_content = (
+            f"Блок: {block_name}\n\n"
             f"Ниже список кадров с их номерами и готовым текстом. Заполни творческую "
             f"часть для КАЖДОГО из них, строго по формату из системной инструкции.\n\n"
             f"OBJECT_LIBRARY.md:\n{library}\n\n"
@@ -430,7 +431,8 @@ def main():
             group = frames[i:i + MAX_FRAMES_PER_REQUEST]
             print(f"  Генерирую творческую часть для кадров "
                   f"{group[0]['num']}-{group[-1]['num']} ({len(group)} шт)...")
-            creative = generate_creative_fields(group, library, master_prompt, client, args.csv_model)
+            creative = generate_creative_fields(group, library, master_prompt, client, args.csv_model,
+                                                 block_name=block_name)
             all_creative.update(creative)
 
         rows = build_csv_rows(frames, all_creative)
