@@ -405,47 +405,65 @@ def concat_clips_with_crossfade(frame_clips_with_durations, transition_duration:
     не нужен). Длительность на каждом шаге ИЗМЕРЯЕТСЯ через ffprobe, а не
     вычисляется теоретически - это исключает накопление ошибок округления.
 
+    Склеивает ПОПАРНО, уровнями (как в сортировке слиянием): сначала
+    пары соседних кадров, потом пары результатов, и так далее - а не
+    "прибавляем по одному кадру к постоянно растущему файлу". Раньше
+    каждый следующий переход пересобирал ВЕСЬ уже склеенный кусок целиком
+    (для 20-го перехода в блоке из 23 кадров это значило перекодировать
+    почти весь блок заново ради одного маленького перехода в конце) - при
+    большом числе кадров это превращалось в десятки минут на один переход.
+    Попарная схема пересобирает каждый кусок только ~log2(N) раз вместо
+    до N раз.
+
     frame_clips_with_durations - список (путь_к_клипу, ...любые доп. поля,
     не используются здесь)."""
     if len(frame_clips_with_durations) == 1:
         return frame_clips_with_durations[0][0]
 
     total_steps = len(frame_clips_with_durations) - 1
-    # "Чистая" сумма длительностей кадров (без добавок на переход) - к
-    # этому числу должно прийти итоговое видео, используем как ориентир
-    # для процента прогресса (не точный процент, но честная оценка).
-    expected_total = sum(d[2] for d in frame_clips_with_durations)
+    step_counter = [0]
 
-    running_clip = frame_clips_with_durations[0][0]
-    running_duration = get_duration(running_clip)
-    if running_duration is None:
-        print(f"[!] Не удалось измерить длительность {running_clip}")
-        return None
+    items = []
+    for clip, _, _ in frame_clips_with_durations:
+        dur = get_duration(clip)
+        if dur is None:
+            print(f"[!] Не удалось измерить длительность {clip}")
+            return None
+        items.append((clip, dur))
 
-    for i in range(1, len(frame_clips_with_durations)):
-        clip_b = frame_clips_with_durations[i][0]
-
-        if expected_total:
-            percent = min(99, int(running_duration * 100 / expected_total))
-            print(f"  Переход {i}/{total_steps}: склеено ~{running_duration:.0f} сек ({percent}%)...")
-        else:
-            print(f"  Переход {i}/{total_steps}...")
+    def merge_pair(a, b):
+        clip_a, dur_a = a
+        clip_b, dur_b = b
+        step_counter[0] += 1
+        i = step_counter[0]
+        print(f"  Переход {i}/{total_steps}...")
 
         merged_path = work_dir / f"merged_{i:04d}.mp4"
-        ok = xfade_pair(running_clip, running_duration, clip_b, transition_duration, merged_path)
+        ok = xfade_pair(clip_a, dur_a, clip_b, transition_duration, merged_path)
         if not ok:
-            print(f"[!] Не удалось сделать переход на кадре {i} - склеиваю жёстко, без перехода")
+            print(f"[!] Не удалось сделать переход - склеиваю жёстко, без перехода")
             merged_path = work_dir / f"merged_hard_{i:04d}.mp4"
-            if not concat_clips([running_clip, clip_b], merged_path):
+            if not concat_clips([clip_a, clip_b], merged_path):
                 return None
 
-        running_clip = merged_path
-        running_duration = get_duration(running_clip)
-        if running_duration is None:
-            print(f"[!] Не удалось измерить длительность промежуточного файла на шаге {i}")
+        new_dur = get_duration(merged_path)
+        if new_dur is None:
+            print(f"[!] Не удалось измерить длительность промежуточного файла")
             return None
+        return (merged_path, new_dur)
 
-    shutil.copy(str(running_clip), str(output_path))
+    while len(items) > 1:
+        next_level = []
+        for j in range(0, len(items) - 1, 2):
+            merged = merge_pair(items[j], items[j + 1])
+            if merged is None:
+                return None
+            next_level.append(merged)
+        if len(items) % 2 == 1:
+            next_level.append(items[-1])  # нечётный кадр без пары на этом уровне - переносим дальше как есть
+        items = next_level
+
+    shutil.copy(str(items[0][0]), str(output_path))
     return output_path
 
 
