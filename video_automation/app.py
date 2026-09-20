@@ -272,6 +272,7 @@ class App(tk.Tk):
             ("10. Скачать папку (любую)", self.on_download_folder),
             ("11. Нарезать аудио по кадрам", self.on_split_audio),
             ("12. Собрать видео блока", self.on_assemble_video),
+            ("13. Описание для YouTube", self.on_generate_youtube_metadata),
         ]
         for i, (label, handler) in enumerate(buttons):
             ttk.Button(steps_frame, text=label, command=handler, width=30).grid(
@@ -1080,6 +1081,58 @@ class App(tk.Tk):
                f'--library OBJECT_LIBRARY.md --master MASTER_ПРОМТ_ДОБАВИТЬ_ТЕГ.txt '
                f'--model "{model}"')
         self.run_in_background(self.exec_remote, cmd)
+
+    def on_generate_youtube_metadata(self):
+        blocks_dir = self.get_blocks_dir_or_warn()
+        if not blocks_dir:
+            return
+        previous_films = self.ask_text_dialog(
+            "Предыдущие фильмы цикла",
+            "Если это не первый фильм цикла - перечисли темы предыдущих фильмов через запятую "
+            "(например: Чернобыль, Маяк) - в конце описания добавится фраза-отсылка к ним. "
+            "Если это первый фильм или отсылка не нужна - оставь пустым.",
+            initial_value="")
+        if previous_films is None:
+            return
+
+        model = self.config_data.get("openai_model") or "gpt-4o"
+        remote_output = f"результаты/youtube_описание_{blocks_dir}.txt"
+        cmd = (f'python3 generate_youtube_metadata.py --blocks-dir "{blocks_dir}" '
+               f'--audio-dir результаты --master MASTER_ПРОМТ_YOUTUBE_ОПИСАНИЕ.txt '
+               f'--output "{remote_output}" --model "{model}"')
+        if previous_films.strip():
+            cmd += f' --previous-films "{previous_films.strip()}"'
+        self.run_in_background(self._generate_youtube_metadata_task, cmd, remote_output)
+
+    def _generate_youtube_metadata_task(self, cmd, remote_output):
+        self.exec_remote(cmd)
+
+        local_path = filedialog.asksaveasfilename(
+            title="Куда сохранить текст для YouTube",
+            initialfile=Path(remote_output).name,
+            defaultextension=".txt")
+        if not local_path:
+            self.log(f"[i] Скачивание пропущено - файл остался на сервере: {remote_output} "
+                      f"(можно скачать позже кнопкой 10)")
+            return
+
+        try:
+            client = self.get_ssh_client()
+        except Exception as e:
+            self.log(f"ОШИБКА подключения для скачивания результата: {e}")
+            return
+        try:
+            download_file(client, f"{REMOTE_DIR}/{remote_output}", local_path)
+        except Exception as e:
+            self.log(f"ОШИБКА скачивания результата: {e}")
+            return
+
+        self.log(f"\nГотово! Сохранено: {local_path}\n")
+        try:
+            content = Path(local_path).read_text(encoding="utf-8")
+            self.log(f"\n{'=' * 50}\n{content}\n{'=' * 50}\n")
+        except Exception as e:
+            self.log(f"[!] Не удалось показать содержимое в журнале: {e}")
 
     def on_generate_media(self):
         self.pick_remote_file_async(f"{REMOTE_DIR}/результаты", ".csv", "Выбери CSV для генерации",
