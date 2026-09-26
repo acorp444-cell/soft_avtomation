@@ -285,9 +285,31 @@ def submit_video_job(prompt, start_image_source, api_key, resolution=VIDEO_RESOL
     return result["id"]
 
 
-def wait_for_job(job_id, api_key, on_progress=None):
+class GenerationStopped(Exception):
+    """Пользователь нажал 'Остановить генерацию' - прерываем немедленно,
+    не дожидаясь окончания текущей попытки/паузы между попытками."""
+
+
+def _sleep_interruptible(total_sec, should_stop):
+    """Спит total_sec секунд, но каждые 0.5 сек проверяет should_stop() и
+    выходит досрочно, если пользователь нажал 'Остановить генерацию'."""
+    if not should_stop:
+        time.sleep(total_sec)
+        return
+    remaining = total_sec
+    step = 0.5
+    while remaining > 0:
+        if should_stop():
+            raise GenerationStopped()
+        time.sleep(min(step, remaining))
+        remaining -= step
+
+
+def wait_for_job(job_id, api_key, on_progress=None, should_stop=None):
     started = time.time()
     while time.time() - started < POLL_TIMEOUT_SEC:
+        if should_stop and should_stop():
+            raise GenerationStopped()
         result = _api_request("GET", f"/jobs/{job_id}", api_key)
         status = result.get("status")
         if status == "succeeded":
@@ -296,25 +318,31 @@ def wait_for_job(job_id, api_key, on_progress=None):
             raise RuntimeError(f"Задача {job_id} завершилась с ошибкой: {result}")
         if on_progress:
             on_progress()
-        time.sleep(POLL_EVERY_SEC)
+        _sleep_interruptible(POLL_EVERY_SEC, should_stop)
     raise TimeoutError(f"Задача {job_id} не завершилась за {POLL_TIMEOUT_SEC} секунд")
 
 
-def _submit_and_wait_with_retries(submit_fn, api_key, log, label):
+def _submit_and_wait_with_retries(submit_fn, api_key, log, label, should_stop=None):
     """Обёртка с повторными попытками вокруг отправки+ожидания одной
     задачи - сетевые сбои/временные ошибки API не должны сразу обрывать
-    всю пачку."""
+    всю пачку. should_stop проверяется перед каждой попыткой и во время
+    ожидания/пауз, чтобы 'Остановить генерацию' прерывало сразу, а не
+    через 10-30 секунд."""
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
+        if should_stop and should_stop():
+            raise GenerationStopped()
         try:
             job_id = submit_fn()
-            result = wait_for_job(job_id, api_key)
+            result = wait_for_job(job_id, api_key, should_stop=should_stop)
             return result
+        except GenerationStopped:
+            raise
         except Exception as e:
             last_error = e
             log(f"  [!] {label}: попытка {attempt}/{MAX_RETRIES} не удалась ({e})")
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SEC)
+                _sleep_interruptible(RETRY_DELAY_SEC, should_stop)
     raise RuntimeError(f"{label}: не удалось после {MAX_RETRIES} попыток ({last_error})")
 
 
@@ -359,13 +387,15 @@ def _looks_like_valid_video(path):
         return False
 
 
-def download_url_with_retries(url, save_path, log, label, verify_fn=None):
+def download_url_with_retries(url, save_path, log, label, verify_fn=None, should_stop=None):
     """Картинка/видео уже сгенерированы и оплачены к этому моменту - если
     падает именно скачивание (а не сама генерация), нет смысла заказывать
     генерацию заново, дешевле и быстрее просто повторить скачивание того
     же самого готового файла несколько раз."""
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
+        if should_stop and should_stop():
+            raise GenerationStopped()
         try:
             download_url(url, save_path)
             if verify_fn and not verify_fn(save_path):
@@ -377,7 +407,7 @@ def download_url_with_retries(url, save_path, log, label, verify_fn=None):
                 os.remove(save_path)  # не оставляем битый файл - иначе программа решит, что всё уже готово
             log(f"  [!] {label}: скачивание, попытка {attempt}/{MAX_RETRIES} не удалась ({e})")
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY_SEC)
+                _sleep_interruptible(RETRY_DELAY_SEC, should_stop)
     raise RuntimeError(f"{label}: скачивание не удалось после {MAX_RETRIES} попыток ({last_error})")
 
 
@@ -468,15 +498,18 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
             result = _submit_and_wait_with_retries(
                 lambda: submit_image_job(full_prompt, api_key),
                 api_key, log, f"картинка {num}/{which}",
+                should_stop=should_stop,
             )
             image_url = result["output"]["url"]
             cost = result.get("cost_usd_cents", 0)
             download_url_with_retries(image_url, raw_path, log, f"картинка {num}/{which}",
-                                       verify_fn=_looks_like_valid_image)
+                                       verify_fn=_looks_like_valid_image, should_stop=should_stop)
             log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
                 f"сохранено: {raw_path}")
             with counters_lock:
                 counters["done"] += 1
+        except GenerationStopped:
+            return
         except Exception as e:
             log(f"  [!!!] Сцена {num} ({which}): не удалось сгенерировать картинку: {e}")
             with counters_lock:
@@ -589,15 +622,18 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
             result = _submit_and_wait_with_retries(
                 lambda: submit_video_job(video_prompt, data_uri, api_key, resolution),
                 api_key, log, f"видео {num}/{which}",
+                should_stop=should_stop,
             )
             video_url = result["output"]["url"]
             cost = result.get("cost_usd_cents", 0)
             download_url_with_retries(video_url, video_path, log, f"видео {num}/{which}",
-                                       verify_fn=_looks_like_valid_video)
+                                       verify_fn=_looks_like_valid_video, should_stop=should_stop)
             log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
                 f"сохранено: {video_path}")
             with counters_lock:
                 counters["done"] += 1
+        except GenerationStopped:
+            return
         except Exception as e:
             log(f"  [!!!] Сцена {num} ({which}): не удалось сгенерировать видео: {e}")
             with counters_lock:
