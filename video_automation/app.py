@@ -29,7 +29,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from runpod_controller import get_latest_pod, resume_pod, stop_pod, wait_until_ready, wait_until_stopped, get_account_balance
+from runpod_controller import get_latest_pod, resume_pod, stop_pod, wait_until_ready, wait_until_stopped, get_account_balance, get_all_pods
 from ssh_runner import connect, run_command, get_pod_ssh_connection, download_file, upload_file, upload_directory, download_matching_files, list_remote_dirs, list_remote_files, cancel_all_local_transfers
 from royaltechno_balance import get_royaltechno_balance
 from ssh_key_setup import ensure_key_installed
@@ -210,6 +210,7 @@ class App(tk.Tk):
         ttk.Button(server_btn_row, text="Статус", command=self.on_status).pack(side="left", padx=4)
         ttk.Button(server_btn_row, text="Включить сервер", command=self.on_start).pack(side="left", padx=4)
         ttk.Button(server_btn_row, text="🔑 Обновить ключ", command=self.on_refresh_key).pack(side="left", padx=4)
+        ttk.Button(server_btn_row, text="📋 Показать все поды", command=self.on_list_pods).pack(side="left", padx=4)
 
         # вторая строка под остальные кнопки - если всё запихнуть в одну
         # строку, на не самом широком окне часть кнопок (например
@@ -780,6 +781,43 @@ class App(tk.Tk):
             self.log(f"Под: {pod['name']} (id: {pod['id']}), статус: {status}")
         except Exception as e:
             self.log(f"ОШИБКА: {e}")
+
+    def on_list_pods(self):
+        """Показывает ВСЕ поды на аккаунте (не только тот, что программа
+        считает 'последним') - полезно после миграций, когда на сайте
+        накопилось несколько похожих подов и непонятно, какой из них
+        реально рабочий."""
+        self.run_in_background(self._list_pods_task)
+
+    def _list_pods_task(self):
+        api_key = self.config_data.get("runpod_api_key")
+        if not api_key:
+            self.log("ОШИБКА: не задан RunPod API-ключ (вкладка Настройки)")
+            return
+        try:
+            pods = get_all_pods(api_key)
+        except Exception as e:
+            self.log(f"ОШИБКА: {e}")
+            return
+        if not pods:
+            self.log("На аккаунте RunPod вообще не найдено ни одного пода.")
+            return
+
+        pods_sorted = sorted(pods, key=lambda p: p.get("createdAt") or "", reverse=True)
+        latest_id = max(pods, key=lambda p: p["createdAt"])["id"]
+
+        self.log(f"\n=== Все поды на аккаунте ({len(pods_sorted)}), самый новый по дате создания сверху ===\n")
+        for pod in pods_sorted:
+            mark = "  <- программа считает этим ПОСЛЕДНИМ" if pod["id"] == latest_id else ""
+            self.log(
+                f"  {pod.get('name')}  (id: {pod.get('id')}){mark}\n"
+                f"    статус: {pod.get('desiredStatus')}, "
+                f"создан: {pod.get('createdAt')}, "
+                f"последний раз запускался: {pod.get('lastStartedAt') or '-'}"
+            )
+        self.log("\nСверьте 'id' в скобках с ID под названием пода на сайте RunPod (мелкая строка "
+                  "под названием) - так можно точно понять, какой конкретно под запускать, "
+                  "если программа выбирает не тот, что реально рабочий после миграции.")
 
     def on_refresh_key(self):
         """Прописывает SSH-ключ на том поде, который сейчас реально запущен
