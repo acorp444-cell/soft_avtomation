@@ -52,6 +52,7 @@ DEFAULT_CONFIG = {
     "royaltechno_max_parallel": "3",
     "lumean_template_id": "01a00ab2-3a8a-716c-b0f5-e205530b39d3",
     "hw_encoder": "none",
+    "video_resolution": "720p",  # пока у RoyalTechno задержки с апскейлом до 1080p
 }
 
 
@@ -577,6 +578,21 @@ class App(tk.Tk):
                   text="none - обычное кодирование процессором (медленнее, но работает всегда). "
                        "qsv - Intel Quick Sync, nvenc - NVIDIA, amf - AMD: сильно быстрее, но нужно "
                        "сначала проверить, что видеокарта это реально поддерживает (спроси, если не уверена).",
+                  foreground="#888888", wraplength=600).pack(anchor="w", padx=10, pady=(0, 4))
+
+        res_row = ttk.Frame(frame)
+        res_row.pack(fill="x", padx=10, pady=4)
+        ttk.Label(res_row, text="Разрешение видео (шаг C, RoyalTechno/Veo)", width=38).pack(side="left")
+        res_var = tk.StringVar(value=self.config_data.get("video_resolution", "1080p"))
+        self.settings_vars["video_resolution"] = res_var
+        res_combo = ttk.Combobox(res_row, textvariable=res_var, width=47, state="readonly",
+                                  values=["1080p", "720p"])
+        res_combo.pack(side="left")
+        ttk.Label(frame,
+                  text="Если RoyalTechno подолгу не отвечает на генерацию видео (много попыток "
+                       "подряд с ошибкой \"не завершилась за 300 секунд\") - их тех.поддержка "
+                       "может рекомендовать временно переключиться на 720p, пока не почини"
+                       "т задержки с апскейлом до 1080p на своей стороне.",
                   foreground="#888888", wraplength=600).pack(anchor="w", padx=10, pady=(0, 4))
 
         ttk.Button(frame, text="Сохранить настройки", command=self.on_save_settings).pack(pady=16)
@@ -1692,7 +1708,9 @@ class App(tk.Tk):
             acquired = True
 
             self._set_queue_status(csv_name, "🔵 Генерируется...")
-            cmd = f'python3 generate_via_api_and_upscale.py --run --csv "результаты/{csv_name}"'
+            resolution = self.config_data.get("video_resolution", "1080p")
+            cmd = (f'python3 generate_via_api_and_upscale.py --run --csv "результаты/{csv_name}" '
+                   f'--video-resolution {resolution}')
             prefix = f"[{csv_name}] "
 
             api_key = self.config_data.get("runpod_api_key")
@@ -2345,10 +2363,12 @@ class App(tk.Tk):
             self.log("ОШИБКА: не задан RoyalTechno API-ключ (вкладка Настройки)")
             return
 
-        self.log(f"\n>>> Генерирую видео из апскейленных картинок (папка: {video_dir})...\n")
+        resolution = self.config_data.get("video_resolution", "1080p")
+        self.log(f"\n>>> Генерирую видео из апскейленных картинок ({resolution}, папка: {video_dir})...\n")
         generate_videos_from_upscaled(str(local_csv), str(upscaled_dir), str(video_dir), api_key,
                                        log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set(),
-                                       max_parallel=self.get_royaltechno_max_parallel())
+                                       max_parallel=self.get_royaltechno_max_parallel(),
+                                       resolution=resolution)
 
     def on_upload_generated_to_runpod(self):
         local_dir = filedialog.askdirectory(

@@ -507,9 +507,17 @@ def main():
                          help="На какой строке закончить (включительно). Используй вместе с --start-row.")
     parser.add_argument("--csv", type=str, default=None,
                          help="Имя CSV-файла для обработки (например 1_block.csv). Если не указано — используется CSV_PATH из настроек скрипта.")
+    parser.add_argument("--video-resolution", choices=["1080p", "720p"], default=None,
+                         help="Переопределить разрешение видео (Veo) - например 720p, если "
+                              "RoyalTechno сообщает о задержках с апскейлом до 1080p")
     args = parser.parse_args()
 
     csv_path = os.path.join(BASE_DIR, args.csv) if args.csv else CSV_PATH
+
+    if args.video_resolution:
+        global VIDEO_RESOLUTION
+        VIDEO_RESOLUTION = args.video_resolution
+        print(f"[i] Разрешение видео переопределено: {VIDEO_RESOLUTION}")
 
     os.makedirs(COMFYUI_INPUT_DIR, exist_ok=True)
 

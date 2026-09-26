@@ -267,16 +267,18 @@ def submit_image_job(prompt, api_key):
     return result["id"]
 
 
-def submit_video_job(prompt, start_image_source, api_key):
+def submit_video_job(prompt, start_image_source, api_key, resolution=VIDEO_RESOLUTION):
     """start_image_source - либо обычная ссылка (str, начинается с http),
-    либо инлайн data URI (str, уже начинается с 'data:')."""
+    либо инлайн data URI (str, уже начинается с 'data:'). resolution -
+    "1080p" или "720p" - если у RoyalTechno проблемы с апскейлом до 1080p
+    (задержки/таймауты), поддержка рекомендует временно генерить в 720p."""
     payload = {
         "model": VIDEO_MODEL,
         "input": {
             "prompt": prompt,
             "start_image_url": start_image_source,
             "duration_sec": VIDEO_DURATION_SEC,
-            "resolution": VIDEO_RESOLUTION,
+            "resolution": resolution,
         },
     }
     result = _api_request("POST", "/jobs", api_key, payload)
@@ -535,7 +537,8 @@ def _image_to_data_uri(image_path):
 
 
 def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
-                                   log=print, should_stop=None, max_parallel=DEFAULT_MAX_PARALLEL):
+                                   log=print, should_stop=None, max_parallel=DEFAULT_MAX_PARALLEL,
+                                   resolution=VIDEO_RESOLUTION):
     """Для каждой сцены с animate=TRUE берёт уже апскейленную картинку
     (из upscaled_dir, скачанную с RunPod после апскейла), отправляет её
     в RoyalTechno/Veo как инлайн-картинку (без отдельной загрузки куда-
@@ -584,7 +587,7 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
         try:
             data_uri = _image_to_data_uri(upscaled_path)
             result = _submit_and_wait_with_retries(
-                lambda: submit_video_job(video_prompt, data_uri, api_key),
+                lambda: submit_video_job(video_prompt, data_uri, api_key, resolution),
                 api_key, log, f"видео {num}/{which}",
             )
             video_url = result["output"]["url"]
