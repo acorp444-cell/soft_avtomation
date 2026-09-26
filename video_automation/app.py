@@ -2016,6 +2016,16 @@ class App(tk.Tk):
             return
         names = [n.strip() for n in raw.split(",") if n.strip()]
 
+        # флажок остановки сбрасываем, только если в очереди сейчас нет ни
+        # одного АКТИВНОГО блока (ждущего или уже генерирующегося) - иначе
+        # можно случайно тайком "отменить" остановку, которую сделали
+        # намеренно: остановили генерацию, потом добавили блок, и он тут
+        # же снова разрешил себе работать. Уже завершённые/остановленные
+        # блоки, оставшиеся в списке, при этом не мешают - это по-прежнему
+        # новый заход.
+        if not self._local_gen_queue_has_active_items():
+            self.local_gen_cancel_event.clear()
+
         added = 0
         for raw_name in names:
             block_name = self._prepare_local_gen_block(raw_name)
@@ -2025,7 +2035,6 @@ class App(tk.Tk):
                 continue  # уже в очереди/обрабатывается - не дублируем
             self.local_gen_queue_blocks.add(block_name)
             self.local_gen_tree.insert("", "end", iid=block_name, text=block_name, values=("⏳ В очереди",))
-            self.local_gen_cancel_event.clear()
             self.run_in_background(self._run_queued_local_generation, block_name)
             added += 1
 
@@ -2069,6 +2078,15 @@ class App(tk.Tk):
         finally:
             if acquired:
                 self.local_gen_queue_semaphore.release()
+
+    def _local_gen_queue_has_active_items(self):
+        for name in self.local_gen_queue_blocks:
+            if not self.local_gen_tree.exists(name):
+                continue
+            status = self.local_gen_tree.item(name, "values")[0]
+            if status not in ("✅ Готово", "⛔ Остановлено") and not status.startswith("❌"):
+                return True
+        return False
 
     def on_clear_finished_local_gen_queue(self):
         for name in list(self.local_gen_queue_blocks):
@@ -2314,6 +2332,11 @@ class App(tk.Tk):
             return
         names = [n.strip() for n in raw.split(",") if n.strip()]
 
+        # см. комментарий в on_add_to_local_gen_queue - сбрасываем флажок
+        # остановки, только если в очереди нет ни одного активного блока
+        if not self._video_queue_has_active_items():
+            self.local_gen_cancel_event.clear()
+
         added = 0
         for name in names:
             work_dir = LOCAL_GENERATION_DIR / name
@@ -2324,7 +2347,6 @@ class App(tk.Tk):
                 continue  # уже в очереди/обрабатывается - не дублируем
             self.video_queue_blocks.add(name)
             self.video_queue_tree.insert("", "end", iid=name, text=name, values=("⏳ В очереди",))
-            self.local_gen_cancel_event.clear()
             self.run_in_background(self._run_queued_video_generation, name)
             added += 1
 
@@ -2366,6 +2388,15 @@ class App(tk.Tk):
         finally:
             if acquired:
                 self.video_queue_semaphore.release()
+
+    def _video_queue_has_active_items(self):
+        for name in self.video_queue_blocks:
+            if not self.video_queue_tree.exists(name):
+                continue
+            status = self.video_queue_tree.item(name, "values")[0]
+            if status not in ("✅ Готово", "⛔ Остановлено") and not status.startswith("❌"):
+                return True
+        return False
 
     def on_clear_finished_video_queue(self):
         for name in list(self.video_queue_blocks):
