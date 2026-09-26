@@ -564,22 +564,25 @@ class App(tk.Tk):
         for key, label in fields:
             row = ttk.Frame(frame)
             row.pack(fill="x", padx=10, pady=4)
-            ttk.Label(row, text=label, width=38).pack(side="left")
+            # подпись - отдельной строкой НАД полем (а не слева от него с
+            # фиксированной шириной) - иначе длинные подписи обрезаются
+            # окном, если оно не развёрнуто на весь экран
+            ttk.Label(row, text=label).pack(anchor="w")
             var = tk.StringVar(value=self.config_data.get(key, ""))
             self.settings_vars[key] = var
             show = "*" if "key" in key else ""
-            settings_entry = ttk.Entry(row, textvariable=var, width=50, show=show)
-            settings_entry.pack(side="left", fill="x", expand=True)
+            settings_entry = ttk.Entry(row, textvariable=var, show=show)
+            settings_entry.pack(fill="x", expand=True, pady=(2, 0))
             self._add_context_menu(settings_entry)
 
         hw_row = ttk.Frame(frame)
         hw_row.pack(fill="x", padx=10, pady=4)
-        ttk.Label(hw_row, text="Сборка видео (кнопка 12): кодирование через видеокарту", width=38).pack(side="left")
+        ttk.Label(hw_row, text="Сборка видео (кнопка 12): кодирование через видеокарту").pack(anchor="w")
         hw_var = tk.StringVar(value=self.config_data.get("hw_encoder", "none"))
         self.settings_vars["hw_encoder"] = hw_var
-        hw_combo = ttk.Combobox(hw_row, textvariable=hw_var, width=47, state="readonly",
+        hw_combo = ttk.Combobox(hw_row, textvariable=hw_var, width=20, state="readonly",
                                  values=["none", "qsv", "nvenc", "amf"])
-        hw_combo.pack(side="left")
+        hw_combo.pack(anchor="w", pady=(2, 0))
         ttk.Label(frame,
                   text="none - обычное кодирование процессором (медленнее, но работает всегда). "
                        "qsv - Intel Quick Sync, nvenc - NVIDIA, amf - AMD: сильно быстрее, но нужно "
@@ -588,12 +591,12 @@ class App(tk.Tk):
 
         res_row = ttk.Frame(frame)
         res_row.pack(fill="x", padx=10, pady=4)
-        ttk.Label(res_row, text="Разрешение видео (шаг C, RoyalTechno/Veo)", width=38).pack(side="left")
+        ttk.Label(res_row, text="Разрешение видео (шаг C, RoyalTechno/Veo)").pack(anchor="w")
         res_var = tk.StringVar(value=self.config_data.get("video_resolution", "1080p"))
         self.settings_vars["video_resolution"] = res_var
-        res_combo = ttk.Combobox(res_row, textvariable=res_var, width=47, state="readonly",
+        res_combo = ttk.Combobox(res_row, textvariable=res_var, width=20, state="readonly",
                                   values=["1080p", "720p"])
-        res_combo.pack(side="left")
+        res_combo.pack(anchor="w", pady=(2, 0))
         ttk.Label(frame,
                   text="Если RoyalTechno подолгу не отвечает на генерацию видео (много попыток "
                        "подряд с ошибкой \"не завершилась за 300 секунд\") - их тех.поддержка "
@@ -603,12 +606,12 @@ class App(tk.Tk):
 
         provider_row = ttk.Frame(frame)
         provider_row.pack(fill="x", padx=10, pady=4)
-        ttk.Label(provider_row, text="Провайдер картинок/видео (шаги A и C, без RunPod)", width=38).pack(side="left")
+        ttk.Label(provider_row, text="Провайдер картинок/видео (шаги A и C, без RunPod)").pack(anchor="w")
         provider_var = tk.StringVar(value=self.config_data.get("image_video_provider", "royaltechno"))
         self.settings_vars["image_video_provider"] = provider_var
-        provider_combo = ttk.Combobox(provider_row, textvariable=provider_var, width=47, state="readonly",
+        provider_combo = ttk.Combobox(provider_row, textvariable=provider_var, width=20, state="readonly",
                                        values=["royaltechno", "google"])
-        provider_combo.pack(side="left")
+        provider_combo.pack(anchor="w", pady=(2, 0))
         ttk.Label(frame,
                   text="royaltechno - как обычно. google - напрямую через Google (Nano Banana + Veo), "
                        "запасной вариант, если RoyalTechno недоступен или подолгу не отвечает. Нужен "
