@@ -45,6 +45,8 @@ from royaltechno_generate import (
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 IMAGE_MODEL = "gemini-2.5-flash-image-preview"
+IMAGE_ASPECT_RATIO = "16:9"  # как у RoyalTechno (landscape) - кадры для видео, не квадратные
+IMAGE_SIZE = "2K"  # 1K/2K/4K - с запасом для последующего апскейла на RunPod
 VIDEO_MODEL = "veo-3.1-generate-preview"
 
 VIDEO_DURATION_SEC = 8
@@ -120,7 +122,15 @@ def _request_image(prompt, api_key):
     """Один запрос на картинку. В отличие от RoyalTechno, тут нет отдельного
     job_id и опроса статуса - готовая картинка (в base64) приходит сразу в
     ответе, если он вообще пришёл успешно."""
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "imageConfig": {
+                "aspectRatio": IMAGE_ASPECT_RATIO,
+                "imageSize": IMAGE_SIZE,
+            },
+        },
+    }
     result = _api_request("POST", f"/models/{IMAGE_MODEL}:generateContent", api_key, payload)
     candidates = result.get("candidates") or []
     parts = (candidates[0].get("content", {}).get("parts", []) if candidates else [])
