@@ -29,8 +29,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from runpod_controller import get_latest_pod, resume_pod, stop_pod, wait_until_ready, wait_until_stopped, get_account_balance, get_all_pods
-from ssh_runner import connect, run_command, get_pod_ssh_connection, download_file, upload_file, upload_directory, download_matching_files, list_remote_dirs, list_remote_files, cancel_all_local_transfers
+from runpod_controller import get_latest_pod, resume_pod, stop_pod, wait_until_ready, wait_until_stopped, get_account_balance, get_all_pods, get_ssh_connection_info
+from ssh_runner import run_command, get_pod_ssh_connection, download_file, upload_file, upload_directory, download_matching_files, list_remote_dirs, list_remote_files, cancel_all_local_transfers
 from royaltechno_balance import get_royaltechno_balance
 from ssh_key_setup import ensure_key_installed
 from royaltechno_generate import generate_images, generate_videos_from_upscaled
@@ -86,8 +86,7 @@ class App(tk.Tk):
         self.config_data = load_config()
         self.output_queue = queue.Queue()
         self.ssh_client = None  # переиспользуем одно подключение между командами
-        self.last_good_ip = None
-        self.last_good_port = None
+        self.last_good_client = None  # закешированный Connection (ssh_runner.py) - чтобы не переспрашивать API лишний раз
         self.cancel_start_event = threading.Event()
 
         # --- автовыключение сервера после завершения всех фоновых задач ---
@@ -670,16 +669,14 @@ class App(tk.Tk):
         if not api_key:
             raise RuntimeError("Не задан RunPod API-ключ (вкладка Настройки)")
 
-        # используем уже проверенный ip/port, если он есть - RunPod API
+        # используем уже проверенное подключение, если оно есть - RunPod API
         # иногда отдаёт слегка расходящиеся данные при частых повторных
         # запросах, поэтому лишний раз не переспрашиваем
-        if self.last_good_ip and self.last_good_port:
-            ip, port = self.last_good_ip, self.last_good_port
+        if self.last_good_client:
+            self.ssh_client = self.last_good_client
         else:
-            ip, port = get_pod_ssh_connection(api_key)
-            self.last_good_ip, self.last_good_port = ip, port
-
-        self.ssh_client = connect(ip, port)
+            self.ssh_client = get_pod_ssh_connection(api_key)
+            self.last_good_client = self.ssh_client
         return self.ssh_client
 
     def ensure_connected_then(self, callback):
@@ -747,12 +744,11 @@ class App(tk.Tk):
         api_key = self.config_data.get("runpod_api_key")
 
         try:
-            if self.last_good_ip and self.last_good_port:
-                ip, port = self.last_good_ip, self.last_good_port
+            if self.last_good_client:
+                client = self.last_good_client
             else:
-                ip, port = get_pod_ssh_connection(api_key)
-                self.last_good_ip, self.last_good_port = ip, port
-            client = connect(ip, port)
+                client = get_pod_ssh_connection(api_key)
+                self.last_good_client = client
         except Exception as e:
             self.log(f"{prefix}ОШИБКА подключения: {e}")
             return
@@ -846,9 +842,8 @@ class App(tk.Tk):
         if key_ok:
             self.status_label.config(text=f"Статус: RUNNING ({pod['name']})")
             self.ssh_client = None  # сбрасываем старое подключение, если было
-            self.last_good_ip = None
-            self.last_good_port = None
-            self.log("Ключ прописан, жду 5 сек, чтобы прямое подключение стабилизировалось...")
+            self.last_good_client = None
+            self.log("Ключ прописан, жду 5 сек, чтобы подключение стабилизировалось...")
             time.sleep(5)
             self.log("Готово! Можно работать.")
         else:
@@ -987,9 +982,15 @@ class App(tk.Tk):
                 return
 
             self.log("Команда отправлена, жду готовности (это может занять минуту-две)...")
-            ip, port = wait_until_ready(api_key, pod["id"])
+            ready_pod = wait_until_ready(api_key, pod["id"])
             self.status_label.config(text=f"Статус: RUNNING ({pod['name']})")
-            self.log(f"Под доступен: {ip}:{port}")
+            direct_ip, direct_port = get_ssh_connection_info(ready_pod)
+            if direct_ip:
+                self.log(f"Под доступен: {direct_ip}:{direct_port} (прямое подключение)")
+            else:
+                self.log("Под доступен через прокси ssh.runpod.io (прямого IP у этого пода нет - "
+                          "SCP/SFTP такое подключение не поддерживает, но программа уже умеет "
+                          "передавать файлы и так)")
 
             self.log("Прописываю SSH-ключ на сервере (на случай миграции)...")
             # под мог обновить данные (например podHostId) - берём свежую копию
@@ -1022,8 +1023,7 @@ class App(tk.Tk):
             self.status_label.config(text=f"Статус: {final_status}")
             self.log(f"Готово, сервер остановлен (статус: {final_status}).")
             self.ssh_client = None
-            self.last_good_ip = None
-            self.last_good_port = None
+            self.last_good_client = None
         except Exception as e:
             self.log(f"ОШИБКА: {e}")
 
@@ -1752,13 +1752,12 @@ class App(tk.Tk):
             prefix = f"[{csv_name}] "
 
             api_key = self.config_data.get("runpod_api_key")
-            if self.last_good_ip and self.last_good_port:
-                ip, port = self.last_good_ip, self.last_good_port
+            if self.last_good_client:
+                client = self.last_good_client
             else:
-                ip, port = get_pod_ssh_connection(api_key)
-                self.last_good_ip, self.last_good_port = ip, port
+                client = get_pod_ssh_connection(api_key)
+                self.last_good_client = client
 
-            client = connect(ip, port)
             full_command = self._build_full_command(cmd)
             self.log(f"\n{prefix}>>> {cmd}\n")
             exit_code = run_command(client, full_command, on_output=lambda line: self.log(f"{prefix}{line}"))
@@ -1829,13 +1828,12 @@ class App(tk.Tk):
             prefix = f"[{csv_name}] "
 
             api_key = self.config_data.get("runpod_api_key")
-            if self.last_good_ip and self.last_good_port:
-                ip, port = self.last_good_ip, self.last_good_port
+            if self.last_good_client:
+                client = self.last_good_client
             else:
-                ip, port = get_pod_ssh_connection(api_key)
-                self.last_good_ip, self.last_good_port = ip, port
+                client = get_pod_ssh_connection(api_key)
+                self.last_good_client = client
 
-            client = connect(ip, port)
             full_command = self._build_full_command(cmd)
             self.log(f"\n{prefix}>>> {cmd}\n")
             exit_code = run_command(client, full_command, on_output=lambda line: self.log(f"{prefix}{line}"))

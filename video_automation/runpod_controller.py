@@ -161,7 +161,12 @@ def get_ssh_connection_info(pod: dict):
 
 
 def wait_until_ready(api_key: str, pod_id: str, timeout_sec: int = START_TIMEOUT_SEC):
-    """Ждёт, пока под запустится и получит SSH-адрес. Возвращает (ip, port)."""
+    """Ждёт, пока под запустится и станет доступен по SSH - либо напрямую
+    по IP (если под это поддерживает), либо хотя бы через управляемый
+    прокси ssh.runpod.io (это есть всегда, но без прямой поддержки
+    SCP/SFTP - см. ssh_runner.py, где это уже учтено). Возвращает сам
+    под (dict), а не (ip, port) - конкретный способ подключения из него
+    строит get_connection_for_pod()."""
     started = time.time()
     while time.time() - started < timeout_sec:
         pods = get_all_pods(api_key)
@@ -171,7 +176,9 @@ def wait_until_ready(api_key: str, pod_id: str, timeout_sec: int = START_TIMEOUT
 
         ip, port = get_ssh_connection_info(pod)
         if ip and port:
-            return ip, port
+            return pod
+        if get_ssh_username(pod):
+            return pod  # прямого IP нет, но прокси-доступ уже возможен
 
         print(f"  ...под запускается, статус: {pod.get('desiredStatus')}, "
               f"жду {POLL_EVERY_SEC} сек")
