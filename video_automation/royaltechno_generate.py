@@ -444,7 +444,7 @@ def _run_tasks_parallel(tasks, worker_fn, max_parallel, log):
     if not tasks:
         return
     log(f"[i] Запускаю с параллелизмом {max_parallel} "
-        f"(как позволяет тариф RoyalTechno)...")
+        f"(как позволяет тариф выбранного провайдера)...")
     with ThreadPoolExecutor(max_workers=max_parallel) as executor:
         list(executor.map(worker_fn, tasks))
 

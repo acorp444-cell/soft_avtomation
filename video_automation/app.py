@@ -33,7 +33,8 @@ from runpod_controller import get_latest_pod, resume_pod, stop_pod, wait_until_r
 from ssh_runner import run_command, get_pod_ssh_connection, download_file, upload_file, upload_directory, download_matching_files, list_remote_dirs, list_remote_files, cancel_all_local_transfers
 from royaltechno_balance import get_royaltechno_balance
 from ssh_key_setup import ensure_key_installed
-from royaltechno_generate import generate_images, generate_videos_from_upscaled
+import royaltechno_generate
+import google_generate
 
 CONFIG_PATH = Path(__file__).resolve().parent / "video_automation_config.json"
 REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/automation"
@@ -53,6 +54,9 @@ DEFAULT_CONFIG = {
     "lumean_template_id": "01a00ab2-3a8a-716c-b0f5-e205530b39d3",
     "hw_encoder": "none",
     "video_resolution": "720p",  # пока у RoyalTechno задержки с апскейлом до 1080p
+    "google_api_key": "",
+    "google_max_parallel": "2",
+    "image_video_provider": "royaltechno",
 }
 
 
@@ -554,6 +558,8 @@ class App(tk.Tk):
             ("lumean_template_id", "Lumean template_id (голос)"),
             ("royaltechno_api_key", "RoyalTechno API-ключ (картинки/видео)"),
             ("royaltechno_max_parallel", "RoyalTechno: сколько сцен генерировать одновременно (по тарифу)"),
+            ("google_api_key", "Google AI Studio API-ключ (запасной вариант для картинок/видео)"),
+            ("google_max_parallel", "Google: сколько сцен генерировать одновременно"),
         ]
         for key, label in fields:
             row = ttk.Frame(frame)
@@ -593,6 +599,21 @@ class App(tk.Tk):
                        "подряд с ошибкой \"не завершилась за 300 секунд\") - их тех.поддержка "
                        "может рекомендовать временно переключиться на 720p, пока не почини"
                        "т задержки с апскейлом до 1080p на своей стороне.",
+                  foreground="#888888", wraplength=600).pack(anchor="w", padx=10, pady=(0, 4))
+
+        provider_row = ttk.Frame(frame)
+        provider_row.pack(fill="x", padx=10, pady=4)
+        ttk.Label(provider_row, text="Провайдер картинок/видео (шаги A и C, без RunPod)", width=38).pack(side="left")
+        provider_var = tk.StringVar(value=self.config_data.get("image_video_provider", "royaltechno"))
+        self.settings_vars["image_video_provider"] = provider_var
+        provider_combo = ttk.Combobox(provider_row, textvariable=provider_var, width=47, state="readonly",
+                                       values=["royaltechno", "google"])
+        provider_combo.pack(side="left")
+        ttk.Label(frame,
+                  text="royaltechno - как обычно. google - напрямую через Google (Nano Banana + Veo), "
+                       "запасной вариант, если RoyalTechno недоступен или подолгу не отвечает. Нужен "
+                       "отдельный Google AI Studio API-ключ выше (не тот же самый, что Gemini Pro в "
+                       "приложении/сайте - это отдельная платная по факту использования штука).",
                   foreground="#888888", wraplength=600).pack(anchor="w", padx=10, pady=(0, 4))
 
         ttk.Button(frame, text="Сохранить настройки", command=self.on_save_settings).pack(pady=16)
@@ -1044,6 +1065,36 @@ class App(tk.Tk):
             return value if value > 0 else 3
         except ValueError:
             return 3
+
+    def get_google_max_parallel(self) -> int:
+        raw = str(self.config_data.get("google_max_parallel", "2")).strip()
+        try:
+            value = int(raw)
+            return value if value > 0 else 2
+        except ValueError:
+            return 2
+
+    def get_image_video_provider(self):
+        """Возвращает словарь с тем, какой провайдер сейчас выбран для
+        генерации картинок/видео без RunPod (шаги A и C) - RoyalTechno
+        (по умолчанию) или Google (Gemini/Veo напрямую, запасной вариант
+        на случай, если RoyalTechno недоступен или медленный)."""
+        provider = self.config_data.get("image_video_provider", "royaltechno")
+        if provider == "google":
+            return {
+                "name": "Google",
+                "generate_images": google_generate.generate_images,
+                "generate_videos": google_generate.generate_videos_from_upscaled,
+                "api_key": self.config_data.get("google_api_key"),
+                "max_parallel": self.get_google_max_parallel(),
+            }
+        return {
+            "name": "RoyalTechno",
+            "generate_images": royaltechno_generate.generate_images,
+            "generate_videos": royaltechno_generate.generate_videos_from_upscaled,
+            "api_key": self.config_data.get("royaltechno_api_key"),
+            "max_parallel": self.get_royaltechno_max_parallel(),
+        }
 
     def on_generate_library(self):
         blocks_dir = self.get_blocks_dir_or_warn()
@@ -1950,16 +2001,17 @@ class App(tk.Tk):
             self.log(f"[!] В {work_dir} не найден OBJECT_LIBRARY.md.")
             return
 
-        api_key = self.config_data.get("royaltechno_api_key")
-        if not api_key:
-            self.log("ОШИБКА: не задан RoyalTechno API-ключ (вкладка Настройки)")
+        provider = self.get_image_video_provider()
+        if not provider["api_key"]:
+            self.log(f"ОШИБКА: не задан {provider['name']} API-ключ (вкладка Настройки)")
             return
 
         self.log(f"\n>>> Использую уже скачанные файлы из {work_dir} - RunPod не нужен.\n")
-        self.log(f">>> Генерирую картинки (папка: {raw_dir})...\n")
-        generate_images(str(local_csv), str(local_library), str(raw_dir), api_key,
-                         log=self.log, limit=limit, should_stop=lambda: self.local_gen_cancel_event.is_set(),
-                         max_parallel=self.get_royaltechno_max_parallel())
+        self.log(f">>> Генерирую картинки через {provider['name']} (папка: {raw_dir})...\n")
+        provider["generate_images"](str(local_csv), str(local_library), str(raw_dir), provider["api_key"],
+                                     log=self.log, limit=limit,
+                                     should_stop=lambda: self.local_gen_cancel_event.is_set(),
+                                     max_parallel=provider["max_parallel"])
 
     def on_browse_local_gen_source_dir(self):
         folder = filedialog.askdirectory(title="Папка с уже скачанными CSV (например, результаты)")
@@ -2141,17 +2193,18 @@ class App(tk.Tk):
             self.log(f"ОШИБКА скачивания CSV/библиотеки: {e}")
             return
 
-        api_key = self.config_data.get("royaltechno_api_key")
-        if not api_key:
-            self.log("ОШИБКА: не задан RoyalTechno API-ключ (вкладка Настройки)")
+        provider = self.get_image_video_provider()
+        if not provider["api_key"]:
+            self.log(f"ОШИБКА: не задан {provider['name']} API-ключ (вкладка Настройки)")
             return
 
         self.log("\n>>> Файлы скачаны - дальше RunPod можно выключить, генерация идёт "
                   "прямо на этом компьютере.\n")
-        self.log(f">>> Генерирую картинки (папка: {raw_dir})...\n")
-        generate_images(str(local_csv), str(local_library), str(raw_dir), api_key,
-                         log=self.log, limit=limit, should_stop=lambda: self.local_gen_cancel_event.is_set(),
-                         max_parallel=self.get_royaltechno_max_parallel())
+        self.log(f">>> Генерирую картинки через {provider['name']} (папка: {raw_dir})...\n")
+        provider["generate_images"](str(local_csv), str(local_library), str(raw_dir), provider["api_key"],
+                                     log=self.log, limit=limit,
+                                     should_stop=lambda: self.local_gen_cancel_event.is_set(),
+                                     max_parallel=provider["max_parallel"])
 
     def on_upscale_on_runpod(self):
         local_dir = filedialog.askdirectory(
@@ -2425,17 +2478,17 @@ class App(tk.Tk):
             return
         local_csv = csv_matches[0]
 
-        api_key = self.config_data.get("royaltechno_api_key")
-        if not api_key:
-            self.log("ОШИБКА: не задан RoyalTechno API-ключ (вкладка Настройки)")
+        provider = self.get_image_video_provider()
+        if not provider["api_key"]:
+            self.log(f"ОШИБКА: не задан {provider['name']} API-ключ (вкладка Настройки)")
             return
 
         resolution = self.config_data.get("video_resolution", "1080p")
-        self.log(f"\n>>> Генерирую видео из апскейленных картинок ({resolution}, папка: {video_dir})...\n")
-        generate_videos_from_upscaled(str(local_csv), str(upscaled_dir), str(video_dir), api_key,
-                                       log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set(),
-                                       max_parallel=self.get_royaltechno_max_parallel(),
-                                       resolution=resolution)
+        self.log(f"\n>>> Генерирую видео через {provider['name']} из апскейленных картинок "
+                  f"({resolution}, папка: {video_dir})...\n")
+        provider["generate_videos"](str(local_csv), str(upscaled_dir), str(video_dir), provider["api_key"],
+                                     log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set(),
+                                     max_parallel=provider["max_parallel"], resolution=resolution)
 
     def on_upload_generated_to_runpod(self):
         local_dir = filedialog.askdirectory(
