@@ -543,7 +543,29 @@ class App(tk.Tk):
         scrollbar.pack(side="right", fill="y")
 
     def _build_settings_tab(self):
-        frame = self.tab_settings
+        # вкладка настроек не помещается целиком на маленьких экранах/окнах -
+        # заворачиваем содержимое в canvas с прокруткой (колесо мыши тоже
+        # работает), иначе нижние настройки (провайдер, кнопка "Сохранить")
+        # были физически недостижимы без возможности прокрутить окно
+        outer = self.tab_settings
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        frame = ttk.Frame(canvas)
+
+        frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window = canvas.create_window((0, 0), window=frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
         ttk.Label(frame, text="Ключи сохраняются локально на этом компьютере, "
                                "рядом с программой (video_automation_config.json).",
                   wraplength=600).pack(anchor="w", padx=10, pady=(10, 14))
