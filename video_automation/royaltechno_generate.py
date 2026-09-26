@@ -47,7 +47,8 @@ VIDEO_DURATION_SEC = 8
 VIDEO_RESOLUTION = "1080p"
 
 POLL_EVERY_SEC = 3
-POLL_TIMEOUT_SEC = 300
+POLL_TIMEOUT_SEC = 300       # картинки обычно готовы быстро
+VIDEO_POLL_TIMEOUT_SEC = 1200  # видео (veo-3.1) при задержках на стороне RoyalTechno может идти намного дольше 5 минут
 MAX_RETRIES = 3
 RETRY_DELAY_SEC = 10
 
@@ -323,9 +324,9 @@ def _make_progress_logger(label, log, interval_sec=PROGRESS_LOG_INTERVAL_SEC):
     return _progress
 
 
-def wait_for_job(job_id, api_key, on_progress=None, should_stop=None):
+def wait_for_job(job_id, api_key, on_progress=None, should_stop=None, timeout_sec=POLL_TIMEOUT_SEC):
     started = time.time()
-    while time.time() - started < POLL_TIMEOUT_SEC:
+    while time.time() - started < timeout_sec:
         if should_stop and should_stop():
             raise GenerationStopped()
         result = _api_request("GET", f"/jobs/{job_id}", api_key)
@@ -337,15 +338,18 @@ def wait_for_job(job_id, api_key, on_progress=None, should_stop=None):
         if on_progress:
             on_progress()
         _sleep_interruptible(POLL_EVERY_SEC, should_stop)
-    raise TimeoutError(f"Задача {job_id} не завершилась за {POLL_TIMEOUT_SEC} секунд")
+    raise TimeoutError(f"Задача {job_id} не завершилась за {timeout_sec} секунд")
 
 
-def _submit_and_wait_with_retries(submit_fn, api_key, log, label, should_stop=None):
+def _submit_and_wait_with_retries(submit_fn, api_key, log, label, should_stop=None,
+                                   timeout_sec=POLL_TIMEOUT_SEC):
     """Обёртка с повторными попытками вокруг отправки+ожидания одной
     задачи - сетевые сбои/временные ошибки API не должны сразу обрывать
     всю пачку. should_stop проверяется перед каждой попыткой и во время
     ожидания/пауз, чтобы 'Остановить генерацию' прерывало сразу, а не
-    через 10-30 секунд."""
+    через 10-30 секунд. timeout_sec - сколько ждать одну задачу, прежде
+    чем считать попытку неудавшейся и заказывать генерацию заново (для
+    видео нужно намного больше, чем для картинок - см. VIDEO_POLL_TIMEOUT_SEC)."""
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         if should_stop and should_stop():
@@ -353,7 +357,8 @@ def _submit_and_wait_with_retries(submit_fn, api_key, log, label, should_stop=No
         try:
             job_id = submit_fn()
             progress_cb = _make_progress_logger(label, log)
-            result = wait_for_job(job_id, api_key, on_progress=progress_cb, should_stop=should_stop)
+            result = wait_for_job(job_id, api_key, on_progress=progress_cb, should_stop=should_stop,
+                                   timeout_sec=timeout_sec)
             return result
         except GenerationStopped:
             raise
@@ -641,7 +646,7 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
             result = _submit_and_wait_with_retries(
                 lambda: submit_video_job(video_prompt, data_uri, api_key, resolution),
                 api_key, log, f"видео {num}/{which}",
-                should_stop=should_stop,
+                should_stop=should_stop, timeout_sec=VIDEO_POLL_TIMEOUT_SEC,
             )
             video_url = result["output"]["url"]
             cost = result.get("cost_usd_cents", 0)
