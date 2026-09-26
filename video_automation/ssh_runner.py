@@ -60,10 +60,23 @@ class Connection:
 
     def ssh_target_args(self):
         """Аргументы для ssh - куда и с каким ключом подключаться,
-        независимо от того, прямой это адрес или прокси."""
+        независимо от того, прямой это адрес или прокси. Прокси
+        ssh.runpod.io требует псевдотерминал (без -t -t отвечает
+        "Your SSH client doesn't support PTY") - прямому подключению
+        это не нужно и не запрашивается, чтобы не менять его поведение."""
         if self.proxy_user:
-            return ["-i", self.key_path, f"{self.proxy_user}@ssh.runpod.io"]
+            return ["-t", "-t", "-i", self.key_path, f"{self.proxy_user}@ssh.runpod.io"]
         return ["-p", str(self.port), "-i", self.key_path, f"root@{self.ip}"]
+
+    def wrap_remote_command(self, command: str) -> str:
+        """Оборачивает команду для выполнения через псевдотерминал (прокси) -
+        отключает локальное эхо и преобразование переносов строк (stty
+        raw), которые иначе искажают бинарные данные (картинки, видео)
+        при передаче файлов через такое подключение. Для прямого
+        подключения (без псевдотерминала) ничего не меняет."""
+        if self.proxy_user:
+            return f"stty raw -echo 2>/dev/null; {command}"
+        return command
 
 
 def connect(ip: str, port: int, key_path: str = DEFAULT_KEY_PATH) -> Connection:
@@ -97,7 +110,7 @@ def get_connection_for_pod(pod: dict, key_path: str = DEFAULT_KEY_PATH) -> Conne
 def run_command(client: Connection, command: str, on_output=None) -> int:
     """Выполняет команду на сервере через системный ssh.exe, стримит
     вывод построчно в реальном времени. Возвращает код завершения."""
-    ssh_cmd = ["ssh"] + SSH_OPTS + client.ssh_target_args() + [command]
+    ssh_cmd = ["ssh"] + SSH_OPTS + client.ssh_target_args() + [client.wrap_remote_command(command)]
 
     process = subprocess.Popen(
         ssh_cmd,
@@ -162,7 +175,7 @@ def upload_file(client: Connection, local_path: str, remote_path: str, on_progre
     которое есть у части подов, а обычный ssh с ним работает как
     обычно). Можно прервать через cancel_all_local_transfers()."""
     total_size = os.path.getsize(local_path)
-    cmd = ["ssh"] + SSH_OPTS + client.ssh_target_args() + [f'cat > "{remote_path}"']
+    cmd = ["ssh"] + SSH_OPTS + client.ssh_target_args() + [client.wrap_remote_command(f'cat > "{remote_path}"')]
 
     # вывод пишем во временный файл, а не в PIPE - иначе если удалённая
     # сторона вдруг что-то напишет в stdout/stderr, пока мы ещё пишем в
@@ -229,7 +242,7 @@ def _download_attempt(client: Connection, remote_path: str, local_path: str,
         return offset
 
     remote_cmd = f'cat "{remote_path}"' if offset == 0 else f'tail -c +{offset + 1} "{remote_path}"'
-    cmd = ["ssh"] + SSH_OPTS + client.ssh_target_args() + [remote_cmd]
+    cmd = ["ssh"] + SSH_OPTS + client.ssh_target_args() + [client.wrap_remote_command(remote_cmd)]
     mode = "wb" if offset == 0 else "ab"
 
     with tempfile.TemporaryFile(mode="w+b") as err_f, open(local_path, mode) as out_f:
