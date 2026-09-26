@@ -305,6 +305,24 @@ def _sleep_interruptible(total_sec, should_stop):
         remaining -= step
 
 
+PROGRESS_LOG_INTERVAL_SEC = 25
+
+
+def _make_progress_logger(label, log, interval_sec=PROGRESS_LOG_INTERVAL_SEC):
+    """Периодически пишет в журнал 'ещё жду ответ', пока задача выполняется
+    на стороне RoyalTechno, - чтобы долгое молчание в журнале (нормальное
+    при реальной генерации видео/картинки) не выглядело как зависание."""
+    last_logged = [time.time()]
+
+    def _progress():
+        now = time.time()
+        if now - last_logged[0] >= interval_sec:
+            last_logged[0] = now
+            log(f"  [i] {label}: всё ещё жду ответ от RoyalTechno...")
+
+    return _progress
+
+
 def wait_for_job(job_id, api_key, on_progress=None, should_stop=None):
     started = time.time()
     while time.time() - started < POLL_TIMEOUT_SEC:
@@ -334,7 +352,8 @@ def _submit_and_wait_with_retries(submit_fn, api_key, log, label, should_stop=No
             raise GenerationStopped()
         try:
             job_id = submit_fn()
-            result = wait_for_job(job_id, api_key, should_stop=should_stop)
+            progress_cb = _make_progress_logger(label, log)
+            result = wait_for_job(job_id, api_key, on_progress=progress_cb, should_stop=should_stop)
             return result
         except GenerationStopped:
             raise
