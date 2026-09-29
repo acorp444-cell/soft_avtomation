@@ -381,6 +381,17 @@ class App(tk.Tk):
                        "дважды: один раз отправить пачку, и один раз (позже, может через сутки) забрать "
                        "готовое. Результат сразу попадает в папку для апскейла на RunPod - жми B сразу после.",
                   foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
+        ttk.Label(openai_batch_frame,
+                  text="Названия CSV через запятую (например: хук, 1_блок, 2_блок) - можно сразу весь "
+                       "фильм одной пачкой, не по одному блоку.",
+                  foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(0, 2))
+        openai_batch_csv_row = ttk.Frame(openai_batch_frame)
+        openai_batch_csv_row.pack(fill="x", padx=6, pady=(0, 4))
+        self.openai_batch_csv_var = tk.StringVar()
+        openai_batch_csv_entry = ttk.Entry(openai_batch_csv_row, textvariable=self.openai_batch_csv_var)
+        openai_batch_csv_entry.pack(side="left", fill="x", expand=True)
+        self._add_context_menu(openai_batch_csv_entry)
+
         openai_batch_row = ttk.Frame(openai_batch_frame)
         openai_batch_row.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Label(openai_batch_row, text="Качество:").pack(side="left", padx=(0, 4))
@@ -2605,18 +2616,18 @@ class App(tk.Tk):
                                      max_parallel=provider["max_parallel"], resolution=resolution)
 
     def on_openai_batch_submit(self):
-        self.pick_remote_file_async(f"{REMOTE_DIR}/результаты", ".csv",
-                                     "Выбери CSV для отправки пачки в OpenAI",
-                                     self._on_openai_batch_submit_picked)
-
-    def _on_openai_batch_submit_picked(self, csv_name):
-        if not csv_name:
+        raw = self.openai_batch_csv_var.get().strip()
+        if not raw:
+            messagebox.showinfo("Не заполнено", "Впиши названия CSV через запятую (например: хук, 1_блок)")
             return
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+        csv_paths = [f"результаты/{n if n.lower().endswith('.csv') else n + '.csv'}" for n in names]
         quality = self.openai_batch_quality_var.get()
-        self.run_in_background(self._openai_batch_submit_task, csv_name, quality)
+        self.run_in_background(self._openai_batch_submit_task, csv_paths, quality)
 
-    def _openai_batch_submit_task(self, csv_name, quality):
-        cmd = (f'python3 openai_batch_generate.py submit --csv "результаты/{csv_name}" '
+    def _openai_batch_submit_task(self, csv_paths, quality):
+        csv_arg = ",".join(csv_paths)
+        cmd = (f'python3 openai_batch_generate.py submit --csv "{csv_arg}" '
                f'--library OBJECT_LIBRARY.md --output-dir "{COMFYUI_INPUT_REMOTE_DIR}" '
                f'--quality {quality}')
         self.exec_remote(cmd)

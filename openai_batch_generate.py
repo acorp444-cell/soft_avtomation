@@ -89,10 +89,11 @@ def _state_path(output_dir: Path) -> Path:
 
 
 def cmd_submit(args):
-    csv_path = Path(args.csv)
-    if not csv_path.exists():
-        print(f"ОШИБКА: CSV не найден: {csv_path}")
-        sys.exit(1)
+    csv_paths = [Path(p.strip()) for p in args.csv.split(",") if p.strip()]
+    for csv_path in csv_paths:
+        if not csv_path.exists():
+            print(f"ОШИБКА: CSV не найден: {csv_path}")
+            sys.exit(1)
 
     library_path = Path(args.library)
     library = parse_library(str(library_path)) if library_path.exists() else {}
@@ -107,31 +108,34 @@ def cmd_submit(args):
               f"Сначала выполните 'check' для неё, или удалите файл вручную, если она не нужна.")
         sys.exit(1)
 
-    rows = read_rows(str(csv_path))
-
     tasks = []  # (custom_id, prompt)
-    for row in rows:
-        num = (row.get("num") or "").strip()
-        if not num:
-            continue
-        # обычные картинки - инфографика (source=AI_INFOGRAPHIC) идёт
-        # отдельным скриптом (generate_infographic_images_openai.py)
-        if (row.get("source") or "").strip() == "AI_INFOGRAPHIC":
-            continue
-        ref_tags = (row.get("ref_tags") or "").strip()
-        for which, col in (("img1", "img_prompt_1"), ("img2", "img_prompt_2")):
-            base_prompt = (row.get(col) or "").strip()
-            if not base_prompt or base_prompt == "-":
+    for csv_path in csv_paths:
+        rows = read_rows(str(csv_path))
+        added = 0
+        for row in rows:
+            num = (row.get("num") or "").strip()
+            if not num:
                 continue
-            dest = output_dir / f"{num}_{which}_raw.jpg"
-            if dest.exists():
-                continue  # уже готово с прошлого раза
-            full_prompt = expand_tags(base_prompt, ref_tags, library)
-            custom_id = f"{num}_{which}"
-            tasks.append((custom_id, full_prompt))
+            # обычные картинки - инфографика (source=AI_INFOGRAPHIC) идёт
+            # отдельным скриптом (generate_infographic_images_openai.py)
+            if (row.get("source") or "").strip() == "AI_INFOGRAPHIC":
+                continue
+            ref_tags = (row.get("ref_tags") or "").strip()
+            for which, col in (("img1", "img_prompt_1"), ("img2", "img_prompt_2")):
+                base_prompt = (row.get(col) or "").strip()
+                if not base_prompt or base_prompt == "-":
+                    continue
+                dest = output_dir / f"{num}_{which}_raw.jpg"
+                if dest.exists():
+                    continue  # уже готово с прошлого раза
+                full_prompt = expand_tags(base_prompt, ref_tags, library)
+                custom_id = f"{num}_{which}"
+                tasks.append((custom_id, full_prompt))
+                added += 1
+        print(f"[i] {csv_path.name}: добавлено в пачку {added} картинок")
 
     if not tasks:
-        print("[i] Генерировать нечего - либо CSV пуст, либо все картинки уже готовы.")
+        print("[i] Генерировать нечего - либо CSV пусты, либо все картинки уже готовы.")
         return
 
     print(f"[i] Собираю пачку: {len(tasks)} картинок (модель {MODEL}, качество {args.quality})")
@@ -256,7 +260,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_submit = sub.add_parser("submit", help="Отправить пачку запросов в OpenAI")
-    p_submit.add_argument("--csv", required=True)
+    p_submit.add_argument("--csv", required=True,
+                           help="один CSV или несколько через запятую (весь фильм за раз)")
     p_submit.add_argument("--library", default="OBJECT_LIBRARY.md")
     p_submit.add_argument("--output-dir", required=True)
     p_submit.add_argument("--quality", default=DEFAULT_QUALITY, choices=["low", "medium", "high"])
