@@ -88,7 +88,7 @@ FINAL_WIDTH = 2048
 FINAL_HEIGHT = 1152
 
 POLL_EVERY_SEC = 3
-POLL_TIMEOUT_SEC = 300        # картинки обычно готовы быстро
+POLL_TIMEOUT_SEC = 1200       # при задержках на стороне RoyalTechno картинки тоже могут идти намного дольше 5 минут
 VIDEO_POLL_TIMEOUT_SEC = 1200  # видео (Veo) при задержках на стороне RoyalTechno может идти намного дольше 5 минут
 MAX_RETRIES = 3          # сколько раз пробовать одну сцену при сбое API
 RETRY_DELAY_SEC = 10     # пауза между попытками

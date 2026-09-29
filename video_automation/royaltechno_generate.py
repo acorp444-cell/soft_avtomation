@@ -47,8 +47,12 @@ VIDEO_DURATION_SEC = 8
 VIDEO_RESOLUTION = "1080p"
 
 POLL_EVERY_SEC = 3
-POLL_TIMEOUT_SEC = 300       # картинки обычно готовы быстро
-VIDEO_POLL_TIMEOUT_SEC = 1200  # видео (veo-3.1) при задержках на стороне RoyalTechno может идти намного дольше 5 минут
+# раньше картинки обычно были готовы быстро (5 минут хватало), но при
+# задержках на стороне RoyalTechno этого мало - картинка всё ещё
+# генерируется на сайте, а программа уже сбрасывает попытку. Теперь то
+# же время ожидания, что и у видео.
+POLL_TIMEOUT_SEC = 1200
+VIDEO_POLL_TIMEOUT_SEC = 1200
 MAX_RETRIES = 3
 RETRY_DELAY_SEC = 10
 
