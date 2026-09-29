@@ -369,6 +369,27 @@ class App(tk.Tk):
         ttk.Button(econ_row, text="12. Сборка видео без RunPod", command=self.on_assemble_video_local,
                    width=28).pack(side="left", padx=4)
 
+        # --- альтернатива шагу A: картинки через OpenAI Batch (нужен RunPod) ---
+        openai_batch_frame = ttk.LabelFrame(
+            economy_frame, text="Картинки через OpenAI Batch (запасной вариант, нужен RunPod)")
+        openai_batch_frame.pack(fill="x", padx=6, pady=6)
+        ttk.Label(openai_batch_frame,
+                  text="Замена шагу A на случай, если RoyalTechno недоступен/дорог. В отличие от A, "
+                       "этому нужен RunPod (у OpenAI региональные ограничения) - но всего на пару минут "
+                       "дважды: один раз отправить пачку, и один раз (позже, может через сутки) забрать "
+                       "готовое. Результат сразу попадает в папку для апскейла на RunPod - жми B сразу после.",
+                  foreground="#888888", wraplength=1000).pack(anchor="w", padx=6, pady=(6, 2))
+        openai_batch_row = ttk.Frame(openai_batch_frame)
+        openai_batch_row.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Label(openai_batch_row, text="Качество:").pack(side="left", padx=(0, 4))
+        self.openai_batch_quality_var = tk.StringVar(value="low")
+        ttk.Combobox(openai_batch_row, textvariable=self.openai_batch_quality_var, width=10,
+                     state="readonly", values=["low", "medium", "high"]).pack(side="left", padx=(0, 10))
+        ttk.Button(openai_batch_row, text="1. Отправить пачку в OpenAI",
+                   command=self.on_openai_batch_submit).pack(side="left", padx=4)
+        ttk.Button(openai_batch_row, text="2. Проверить/забрать готовое",
+                   command=self.on_openai_batch_check).pack(side="left", padx=4)
+
         # --- очередь генерации картинок без RunPod (несколько блоков сразу) ---
         local_gen_frame = ttk.LabelFrame(economy_frame,
                                           text="Очередь генерации картинок без RunPod")
@@ -2514,6 +2535,27 @@ class App(tk.Tk):
         provider["generate_videos"](str(local_csv), str(upscaled_dir), str(video_dir), provider["api_key"],
                                      log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set(),
                                      max_parallel=provider["max_parallel"], resolution=resolution)
+
+    def on_openai_batch_submit(self):
+        self.pick_remote_file_async(f"{REMOTE_DIR}/результаты", ".csv",
+                                     "Выбери CSV для отправки пачки в OpenAI",
+                                     self._on_openai_batch_submit_picked)
+
+    def _on_openai_batch_submit_picked(self, csv_name):
+        if not csv_name:
+            return
+        quality = self.openai_batch_quality_var.get()
+        self.run_in_background(self._openai_batch_submit_task, csv_name, quality)
+
+    def _openai_batch_submit_task(self, csv_name, quality):
+        cmd = (f'python3 openai_batch_generate.py submit --csv "результаты/{csv_name}" '
+               f'--library OBJECT_LIBRARY.md --output-dir "{COMFYUI_INPUT_REMOTE_DIR}" '
+               f'--quality {quality}')
+        self.exec_remote(cmd)
+
+    def on_openai_batch_check(self):
+        cmd = (f'python3 openai_batch_generate.py check --output-dir "{COMFYUI_INPUT_REMOTE_DIR}"')
+        self.run_in_background(self.exec_remote, cmd)
 
     def on_upload_generated_to_runpod(self):
         local_dir = filedialog.askdirectory(
