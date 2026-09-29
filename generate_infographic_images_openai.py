@@ -28,6 +28,7 @@ CSV с source=AI_INFOGRAPHIC.
 import argparse
 import base64
 import csv
+import io
 import os
 import sys
 from pathlib import Path
@@ -38,9 +39,36 @@ except ImportError:
     print("Не установлена библиотека openai. Выполните: pip install openai")
     sys.exit(1)
 
-MODEL = "gpt-image-1"
-SIZE = "1024x1024"
+try:
+    from PIL import Image
+except ImportError:
+    print("Не установлена библиотека Pillow. Выполните: pip install Pillow")
+    sys.exit(1)
+
+MODEL = "gpt-image-2"  # gpt-image-1 отключается OpenAI 23 октября 2026
+# у OpenAI нет готового формата 16:9 - только 1024x1024 (квадрат),
+# 1536x1024 (3:2) и 1024x1536 (2:3). Генерируем ближайший альбомный (3:2),
+# затем обрезаем по центру до точных 16:9 - см. _crop_to_16_9()
+SIZE = "1536x1024"
+CROP_WIDTH, CROP_HEIGHT = 1536, 864  # 1536x864 = ровно 16:9
+# инфографики немного (несколько кадров на блок), а весь смысл именно в
+# ЧЁТКОМ читаемом тексте - тут не экономим на качестве, как в массовой
+# batch-генерации обычных картинок
+QUALITY = "medium"
 CSV_DELIMITER = ";"
+
+
+def _crop_to_16_9(image_bytes: bytes) -> bytes:
+    """Обрезает картинку по центру с 1536x1024 (3:2, всё что даёт OpenAI)
+    до 1536x864 (ровно 16:9, как у остального видео) - убирает по 80px
+    сверху и снизу, по бокам не трогает."""
+    img = Image.open(io.BytesIO(image_bytes))
+    left = 0
+    top = (img.height - CROP_HEIGHT) // 2
+    cropped = img.crop((left, top, left + CROP_WIDTH, top + CROP_HEIGHT))
+    buf = io.BytesIO()
+    cropped.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
 
 # то же самое, что и построчный вывод без буферизации в остальных
 # скриптах - иначе журнал в приложении на компьютере "молчит" минутами
@@ -49,7 +77,7 @@ sys.stdout.reconfigure(line_buffering=True)
 
 def generate_and_save(client, prompt: str, dest_path: Path) -> bool:
     try:
-        response = client.images.generate(model=MODEL, prompt=prompt, size=SIZE, n=1)
+        response = client.images.generate(model=MODEL, prompt=prompt, size=SIZE, quality=QUALITY, n=1)
     except Exception as e:
         print(f"  [!!!] Ошибка запроса к OpenAI: {e}")
         return False
@@ -60,7 +88,8 @@ def generate_and_save(client, prompt: str, dest_path: Path) -> bool:
         return False
 
     try:
-        dest_path.write_bytes(base64.b64decode(b64))
+        raw_bytes = base64.b64decode(b64)
+        dest_path.write_bytes(_crop_to_16_9(raw_bytes))
     except Exception as e:
         print(f"  [!!!] Не удалось сохранить файл: {e}")
         return False
