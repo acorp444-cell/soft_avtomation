@@ -402,6 +402,8 @@ class App(tk.Tk):
                    command=self.on_openai_batch_submit).pack(side="left", padx=4)
         ttk.Button(openai_batch_row, text="2. Проверить/забрать готовое",
                    command=self.on_openai_batch_check).pack(side="left", padx=4)
+        ttk.Button(openai_batch_row, text="3. Апскейл",
+                   command=self.on_openai_batch_upscale).pack(side="left", padx=4)
 
         # --- очередь генерации картинок без RunPod (несколько блоков сразу) ---
         local_gen_frame = ttk.LabelFrame(economy_frame,
@@ -2635,6 +2637,112 @@ class App(tk.Tk):
     def on_openai_batch_check(self):
         cmd = (f'python3 openai_batch_generate.py check --output-dir "{COMFYUI_INPUT_REMOTE_DIR}"')
         self.run_in_background(self.exec_remote, cmd)
+
+    def on_openai_batch_upscale(self):
+        """Апскейл для картинок из OpenAI Batch - в отличие от обычной
+        кнопки B, картинки уже на RunPod (не на компьютере), поэтому
+        здесь не нужна загрузка raw-файлов - только сгенерировать
+        недостающую инфографику, запустить апскейл и разложить готовое
+        по локальным папкам блоков (те же названия, что при отправке
+        пачки) - чтобы шаг C потом их нашёл."""
+        raw = self.openai_batch_csv_var.get().strip()
+        if not raw:
+            messagebox.showinfo("Не заполнено", "Впиши названия блоков через запятую (те же, что при отправке пачки)")
+            return
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+        block_names = [n[:-4] if n.lower().endswith(".csv") else n for n in names]
+        self.run_in_background(self._openai_batch_upscale_task, block_names)
+
+    def _openai_batch_upscale_task(self, block_names):
+        try:
+            client = self.get_ssh_client()
+        except Exception as e:
+            self.log(f"ОШИБКА подключения: {e}")
+            return
+
+        block_dirs = {}
+        block_nums = {}  # block_name -> set(num)
+        block_infographic_nums = {}  # block_name -> set(num)
+
+        for block_name in block_names:
+            work_dir = LOCAL_GENERATION_DIR / block_name
+            work_dir.mkdir(parents=True, exist_ok=True)
+            block_dirs[block_name] = work_dir
+            local_csv = work_dir / f"{block_name}.csv"
+            local_library = work_dir / "OBJECT_LIBRARY.md"
+
+            if not local_csv.exists():
+                self.log(f">>> Скачиваю {block_name}.csv...")
+                try:
+                    download_file(client, f"{REMOTE_DIR}/результаты/{block_name}.csv", str(local_csv))
+                except Exception as e:
+                    self.log(f"ОШИБКА скачивания CSV для {block_name}: {e}")
+                    continue
+            if not local_library.exists():
+                try:
+                    download_file(client, f"{REMOTE_DIR}/OBJECT_LIBRARY.md", str(local_library))
+                except Exception:
+                    pass
+
+            nums, infographic_nums = set(), set()
+            with open(local_csv, "r", encoding="utf-8-sig", newline="") as f:
+                for row in csv.DictReader(f, delimiter=";"):
+                    num = (row.get("num") or "").strip()
+                    if not num:
+                        continue
+                    nums.add(num)
+                    if (row.get("source") or "").strip() == "AI_INFOGRAPHIC":
+                        infographic_nums.add(num)
+            block_nums[block_name] = nums
+            block_infographic_nums[block_name] = infographic_nums
+
+        for block_name, infographic_nums in block_infographic_nums.items():
+            if not infographic_nums:
+                continue
+            self.log(f"\n>>> Генерирую инфографику для {block_name} ({len(infographic_nums)} кадр(ов))...\n")
+            cmd = (f'python3 generate_infographic_images_openai.py '
+                   f'--csv "результаты/{block_name}.csv" --output-dir "{COMFYUI_INPUT_REMOTE_DIR}"')
+            self.exec_remote(cmd)
+
+        self.log("\n>>> Запускаю апскейл на сервере (видеокарта нужна только для этого шага)...\n")
+        cmd = (f'python3 upscale_batch.py --input-dir "{COMFYUI_INPUT_REMOTE_DIR}" '
+               f'--output-dir "{COMFYUI_OUTPUT_REMOTE_DIR}"')
+        self.exec_remote(cmd)
+
+        try:
+            remote_files = list_remote_files(client, COMFYUI_OUTPUT_REMOTE_DIR, ".png")
+        except Exception as e:
+            self.log(f"ОШИБКА получения списка файлов на сервере: {e}")
+            return
+
+        all_nums = set()
+        for block_name, nums in block_nums.items():
+            all_nums |= nums
+            prefixes = {f"{n}_img1" for n in nums} | {f"{n}_img2" for n in nums}
+            matching = [f for f in remote_files if any(f.startswith(p + "_") for p in prefixes)]
+            upscaled_dir = block_dirs[block_name] / "upscaled"
+            upscaled_dir.mkdir(parents=True, exist_ok=True)
+            self.log(f"\n>>> Скачиваю {len(matching)} картинок для {block_name}...\n")
+            for i, filename in enumerate(matching, 1):
+                self.log(f"  [{i}/{len(matching)}] {filename}...")
+                download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(upscaled_dir / filename))
+
+        self.log("\nГотово! Апскейл скачан по папкам блоков в local_generation "
+                  "(теми же названиями, что вы вписали) - можно выключать RunPod и переходить к шагу C.\n")
+
+        # уборка на сервере - иначе общие папки input/output копят файлы
+        # всех прошлых запусков навсегда
+        try:
+            remote_paths_to_remove = [f"{COMFYUI_OUTPUT_REMOTE_DIR}/{f}" for f in remote_files
+                                       if any(f.startswith(f"{n}_img1_") or f.startswith(f"{n}_img2_")
+                                              for n in all_nums)]
+            for which in ("img1", "img2"):
+                remote_paths_to_remove += [f"{COMFYUI_INPUT_REMOTE_DIR}/{n}_{which}_raw.jpg" for n in all_nums]
+            quoted = " ".join(f'"{p}"' for p in remote_paths_to_remove)
+            if quoted:
+                self.exec_remote(f"rm -f {quoted}", prefix="[уборка] ")
+        except Exception as e:
+            self.log(f"[!] Уборка на сервере не удалась (не критично): {e}")
 
     def on_upload_generated_to_runpod(self):
         local_dir = filedialog.askdirectory(
