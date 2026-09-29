@@ -309,17 +309,31 @@ def _sleep_interruptible(total_sec, should_stop):
 PROGRESS_LOG_INTERVAL_SEC = 25
 
 
-def _make_progress_logger(label, log, interval_sec=PROGRESS_LOG_INTERVAL_SEC):
-    """Периодически пишет в журнал 'ещё жду ответ', пока задача выполняется
-    на стороне RoyalTechno, - чтобы долгое молчание в журнале (нормальное
-    при реальной генерации видео/картинки) не выглядело как зависание."""
-    last_logged = [time.time()]
+def format_elapsed(seconds):
+    """44 -> '44 сек', 95 -> '1 мин 35 сек' - для журнала, чтобы было видно,
+    сколько времени уже идёт (или заняла) генерация, а не только что она
+    вообще происходит."""
+    seconds = int(seconds)
+    minutes, secs = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes} мин {secs} сек"
+    return f"{secs} сек"
+
+
+def _make_progress_logger(label, log, interval_sec=PROGRESS_LOG_INTERVAL_SEC, started=None):
+    """Периодически пишет в журнал 'ещё жду ответ' (с прошедшим временем),
+    пока задача выполняется на стороне RoyalTechno, - чтобы долгое молчание
+    в журнале (нормальное при реальной генерации видео/картинки) не
+    выглядело как зависание."""
+    started = started or time.time()
+    last_logged = [started]
 
     def _progress():
         now = time.time()
         if now - last_logged[0] >= interval_sec:
             last_logged[0] = now
-            log(f"  [i] {label}: всё ещё жду ответ от RoyalTechno...")
+            log(f"  [i] {label}: всё ещё жду ответ от RoyalTechno... "
+                f"(прошло {format_elapsed(now - started)})")
 
     return _progress
 
@@ -350,13 +364,14 @@ def _submit_and_wait_with_retries(submit_fn, api_key, log, label, should_stop=No
     через 10-30 секунд. timeout_sec - сколько ждать одну задачу, прежде
     чем считать попытку неудавшейся и заказывать генерацию заново (для
     видео нужно намного больше, чем для картинок - см. VIDEO_POLL_TIMEOUT_SEC)."""
+    overall_started = time.time()  # с первой попытки - чтобы "прошло" в журнале считалось по всей сцене, а не заново с каждой попытки
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         if should_stop and should_stop():
             raise GenerationStopped()
         try:
             job_id = submit_fn()
-            progress_cb = _make_progress_logger(label, log)
+            progress_cb = _make_progress_logger(label, log, started=overall_started)
             result = wait_for_job(job_id, api_key, on_progress=progress_cb, should_stop=should_stop,
                                    timeout_sec=timeout_sec)
             return result
@@ -521,6 +536,7 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
             os.remove(raw_path)
 
         full_prompt = expand_tags(base_prompt, ref_tags, library, log=log)
+        task_started = time.time()
         log(f"=== Сцена {num} ({which}) - запрос картинки в RoyalTechno...")
         try:
             result = _submit_and_wait_with_retries(
@@ -532,8 +548,8 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
             cost = result.get("cost_usd_cents", 0)
             download_url_with_retries(image_url, raw_path, log, f"картинка {num}/{which}",
                                        verify_fn=_looks_like_valid_image, should_stop=should_stop)
-            log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
-                f"сохранено: {raw_path}")
+            log(f"  [+] Сцена {num} ({which}) готово за {format_elapsed(time.time() - task_started)}, "
+                f"стоимость {cost} центов, сохранено: {raw_path}")
             with counters_lock:
                 counters["done"] += 1
         except GenerationStopped:
@@ -644,6 +660,7 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
                 counters["failed"] += 1
             return
 
+        task_started = time.time()
         log(f"=== Сцена {num} ({which}) - оживляю {os.path.basename(upscaled_path)}...")
         try:
             data_uri = _image_to_data_uri(upscaled_path)
@@ -656,8 +673,8 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
             cost = result.get("cost_usd_cents", 0)
             download_url_with_retries(video_url, video_path, log, f"видео {num}/{which}",
                                        verify_fn=_looks_like_valid_video, should_stop=should_stop)
-            log(f"  [+] Сцена {num} ({which}) готово, стоимость {cost} центов, "
-                f"сохранено: {video_path}")
+            log(f"  [+] Сцена {num} ({which}) готово за {format_elapsed(time.time() - task_started)}, "
+                f"стоимость {cost} центов, сохранено: {video_path}")
             with counters_lock:
                 counters["done"] += 1
         except GenerationStopped:

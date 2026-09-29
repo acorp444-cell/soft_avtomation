@@ -41,6 +41,7 @@ from royaltechno_generate import (
     parse_library,
     expand_tags,
     read_rows,
+    format_elapsed,
 )
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -208,6 +209,7 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
             os.remove(raw_path)
 
         full_prompt = expand_tags(base_prompt, ref_tags, library, log=log)
+        task_started = time.time()
         log(f"=== Сцена {num} ({which}) - запрос картинки в Google (Nano Banana)...")
         try:
             b64_data = _request_image_with_retries(full_prompt, api_key, log, f"картинка {num}/{which}",
@@ -217,7 +219,8 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
                 f.write(base64.b64decode(b64_data))
             if not _looks_like_valid_image(raw_path):
                 raise RuntimeError("полученная картинка повреждена")
-            log(f"  [+] Сцена {num} ({which}) готово, сохранено: {raw_path}")
+            log(f"  [+] Сцена {num} ({which}) готово за {format_elapsed(time.time() - task_started)}, "
+                f"сохранено: {raw_path}")
             with counters_lock:
                 counters["done"] += 1
         except GenerationStopped:
@@ -294,13 +297,14 @@ def _download_video(operation_result, api_key, save_path):
 
 def _submit_and_wait_video_with_retries(prompt, image_data_uri, api_key, resolution, log, label,
                                          should_stop=None):
+    overall_started = time.time()  # с первой попытки - "прошло" в журнале считается по всей сцене
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         if should_stop and should_stop():
             raise GenerationStopped()
         try:
             operation_name = _submit_video(prompt, image_data_uri, api_key, resolution)
-            progress_cb = _make_progress_logger(label, log)
+            progress_cb = _make_progress_logger(label, log, started=overall_started)
             return _wait_for_video_operation(operation_name, api_key, on_progress=progress_cb,
                                               should_stop=should_stop, timeout_sec=VIDEO_POLL_TIMEOUT_SEC)
         except GenerationStopped:
@@ -356,6 +360,7 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
                 counters["failed"] += 1
             return
 
+        task_started = time.time()
         log(f"=== Сцена {num} ({which}) - оживляю через Google Veo {os.path.basename(upscaled_path)}...")
         try:
             data_uri = _image_to_data_uri(upscaled_path)
@@ -366,7 +371,8 @@ def generate_videos_from_upscaled(csv_path, upscaled_dir, output_dir, api_key,
             _download_video(operation_result, api_key, video_path)
             if not _looks_like_valid_video(video_path):
                 raise RuntimeError("скачанное видео повреждено")
-            log(f"  [+] Сцена {num} ({which}) готово, сохранено: {video_path}")
+            log(f"  [+] Сцена {num} ({which}) готово за {format_elapsed(time.time() - task_started)}, "
+                f"сохранено: {video_path}")
             with counters_lock:
                 counters["done"] += 1
         except GenerationStopped:
