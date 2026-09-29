@@ -82,7 +82,7 @@ FINAL_WIDTH = 2560
 FINAL_HEIGHT = 1440
 
 POLL_EVERY_SEC = 3
-POLL_TIMEOUT_SEC = 300
+POLL_TIMEOUT_SEC = 600  # при задержках на стороне RoyalTechno 5 минут не всегда хватает
 MAX_RETRIES = 3
 RETRY_DELAY_SEC = 10
 

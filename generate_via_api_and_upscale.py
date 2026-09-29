@@ -88,7 +88,8 @@ FINAL_WIDTH = 2048
 FINAL_HEIGHT = 1152
 
 POLL_EVERY_SEC = 3
-POLL_TIMEOUT_SEC = 300
+POLL_TIMEOUT_SEC = 300        # картинки обычно готовы быстро
+VIDEO_POLL_TIMEOUT_SEC = 1200  # видео (Veo) при задержках на стороне RoyalTechno может идти намного дольше 5 минут
 MAX_RETRIES = 3          # сколько раз пробовать одну сцену при сбое API
 RETRY_DELAY_SEC = 10     # пауза между попытками
 
@@ -289,9 +290,9 @@ def submit_video_job(prompt, start_image_source):
     return result["id"]
 
 
-def wait_for_job(job_id):
+def wait_for_job(job_id, timeout_sec=POLL_TIMEOUT_SEC):
     started = time.time()
-    while time.time() - started < POLL_TIMEOUT_SEC:
+    while time.time() - started < timeout_sec:
         result = _api_request("GET", f"/jobs/{job_id}")
         status = result.get("status")
         if status == "succeeded":
@@ -303,7 +304,7 @@ def wait_for_job(job_id):
         print(".", end="", flush=True)  # видимый признак, что скрипт не завис
         time.sleep(POLL_EVERY_SEC)
     print()
-    raise TimeoutError(f"Задача {job_id} не завершилась за {POLL_TIMEOUT_SEC} секунд")
+    raise TimeoutError(f"Задача {job_id} не завершилась за {timeout_sec} секунд")
 
 
 def download_image(url, save_path):
@@ -448,7 +449,7 @@ def process_scene(num, which, full_prompt, row, upscale_template):
             start_image_source = _image_to_data_uri(upscaled_path)
             video_job_id = submit_video_job(video_prompt, start_image_source)
             print(f"[+] Видео-задача отправлена, id: {video_job_id}")
-            video_result = wait_for_job(video_job_id)
+            video_result = wait_for_job(video_job_id, timeout_sec=VIDEO_POLL_TIMEOUT_SEC)
             video_url = video_result["output"]["url"]
             video_cost = video_result.get("cost_usd_cents", 0)
             print(f"[+] Видео готово. Стоимость: {video_cost} центов. URL: {video_url}")
