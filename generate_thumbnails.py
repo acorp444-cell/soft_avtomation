@@ -335,7 +335,7 @@ def process_thumbnail(index, prompt, comfyui_url, comfyui_input_dir, comfyui_out
             result = wait_for_job(job_id)
             image_url = result["output"]["url"]
             cost = result.get("cost_usd_cents", 0)
-            print(f"[+] Готово. Стоимость: {cost} центов.")
+            print(f"[+] Готово. Стоимость: {cost} центов. URL: {image_url}")
 
             raw_filename = f"thumb_{index:02d}_raw.jpg"
             raw_path = os.path.join(comfyui_input_dir, raw_filename)
@@ -355,6 +355,18 @@ def process_thumbnail(index, prompt, comfyui_url, comfyui_input_dir, comfyui_out
                 print(f"[+] Готовая картинка: {path}")
             return True
 
+        except urllib.error.HTTPError as e:
+            # e.read() отдаёт ТЕЛО ответа сервера (обычно там написано,
+            # что конкретно не понравилось) - без этого str(e) показывает
+            # только код ошибки, ничего не объясняя
+            try:
+                body = e.read().decode("utf-8", errors="ignore")
+            except Exception:
+                body = "(не удалось прочитать тело ответа)"
+            print(f"[!] Ошибка на превью {index}: HTTP {e.code} ({e.url}): {body[:500]}")
+            if attempt < MAX_RETRIES:
+                print(f"[!] Жду {RETRY_DELAY_SEC} сек перед следующей попыткой...")
+                time.sleep(RETRY_DELAY_SEC)
         except Exception as e:
             print(f"[!] Ошибка на превью {index}: {e}")
             if attempt < MAX_RETRIES:
