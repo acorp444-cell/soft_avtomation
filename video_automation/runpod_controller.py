@@ -118,6 +118,20 @@ def stop_pod(api_key: str, pod_id: str):
     return _graphql(api_key, query, variables)
 
 
+def terminate_pod(api_key: str, pod_id: str):
+    """Полностью удаляет под (в отличие от stop_pod - данные на диске
+    ПОДА тоже пропадают, но не на подключённом Network volume, если он
+    есть). Необратимо - используется для чистки старых мёртвых
+    (EXITED) подов, которые больше не запустятся."""
+    query = """
+    mutation podTerminate($input: PodTerminateInput!) {
+      podTerminate(input: $input)
+    }
+    """
+    variables = {"input": {"podId": pod_id}}
+    return _graphql(api_key, query, variables)
+
+
 def get_ssh_username(pod: dict):
     """Строит username для подключения через прокси ssh.runpod.io
     (формат 'podid-hostid'). Возвращает None, если podHostId недоступен.

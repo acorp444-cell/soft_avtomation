@@ -29,7 +29,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from runpod_controller import get_latest_pod, resume_pod, stop_pod, wait_until_ready, wait_until_stopped, get_account_balance, get_all_pods, get_ssh_connection_info
+from runpod_controller import get_latest_pod, resume_pod, stop_pod, terminate_pod, wait_until_ready, wait_until_stopped, get_account_balance, get_all_pods, get_ssh_connection_info
 from ssh_runner import run_command, get_pod_ssh_connection, download_file, upload_file, upload_directory, download_matching_files, list_remote_dirs, list_remote_files, cancel_all_local_transfers
 from royaltechno_balance import get_royaltechno_balance
 from ssh_key_setup import ensure_key_installed
@@ -215,6 +215,7 @@ class App(tk.Tk):
         ttk.Button(server_btn_row, text="Включить сервер", command=self.on_start).pack(side="left", padx=4)
         ttk.Button(server_btn_row, text="🔑 Обновить ключ", command=self.on_refresh_key).pack(side="left", padx=4)
         ttk.Button(server_btn_row, text="📋 Показать все поды", command=self.on_list_pods).pack(side="left", padx=4)
+        ttk.Button(server_btn_row, text="🗑 Очистить мёртвые поды", command=self.on_cleanup_dead_pods).pack(side="left", padx=4)
 
         # вторая строка под остальные кнопки - если всё запихнуть в одну
         # строку, на не самом широком окне часть кнопок (например
@@ -894,6 +895,56 @@ class App(tk.Tk):
         self.log("\nСверьте 'id' в скобках с ID под названием пода на сайте RunPod (мелкая строка "
                   "под названием) - так можно точно понять, какой конкретно под запускать, "
                   "если программа выбирает не тот, что реально рабочий после миграции.")
+
+    def on_cleanup_dead_pods(self):
+        """Удаляет насовсем все поды со статусом EXITED (мёртвые, не
+        запустятся) - например, старую цепочку из миграций. Никогда не
+        трогает тот под, который программа считает 'последним' (даже
+        если бы он оказался EXITED) - на всякий случай, чтобы случайно
+        не удалить рабочий под."""
+        api_key = self.config_data.get("runpod_api_key")
+        if not api_key:
+            self.log("ОШИБКА: не задан RunPod API-ключ (вкладка Настройки)")
+            return
+        try:
+            pods = get_all_pods(api_key)
+        except Exception as e:
+            self.log(f"ОШИБКА: {e}")
+            return
+        if not pods:
+            self.log("На аккаунте RunPod вообще не найдено ни одного пода.")
+            return
+
+        latest_id = max(pods, key=lambda p: p["createdAt"])["id"]
+        dead_pods = [p for p in pods if p.get("desiredStatus") == "EXITED" and p["id"] != latest_id]
+
+        if not dead_pods:
+            messagebox.showinfo("Нечего чистить", "Мёртвых (EXITED) подов не найдено - чистить нечего.")
+            return
+
+        names_preview = "\n".join(f"  - {p.get('name')}" for p in dead_pods[:10])
+        more = f"\n  ...и ещё {len(dead_pods) - 10}" if len(dead_pods) > 10 else ""
+        if not messagebox.askyesno(
+                "Подтверждение",
+                f"Будет полностью удалено подов: {len(dead_pods)} (статус EXITED, не запустятся).\n"
+                f"Это необратимо (но данные на подключённом сетевом диске не тронет).\n\n"
+                f"{names_preview}{more}\n\nПродолжить?"):
+            return
+
+        self.run_in_background(self._cleanup_dead_pods_task, api_key, dead_pods)
+
+    def _cleanup_dead_pods_task(self, api_key, dead_pods):
+        self.log(f"\n>>> Удаляю {len(dead_pods)} мёртвых подов...\n")
+        done, failed = 0, 0
+        for pod in dead_pods:
+            try:
+                terminate_pod(api_key, pod["id"])
+                self.log(f"  [+] Удалён: {pod.get('name')} ({pod['id']})")
+                done += 1
+            except Exception as e:
+                self.log(f"  [!] Не удалось удалить {pod.get('name')} ({pod['id']}): {e}")
+                failed += 1
+        self.log(f"\nГотово! Удалено: {done}, ошибок: {failed}")
 
     def on_refresh_key(self):
         """Прописывает SSH-ключ на том поде, который сейчас реально запущен
