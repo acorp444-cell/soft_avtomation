@@ -38,7 +38,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 API_BASE = "https://api.royaltechno.cc/v1"
-IMAGE_MODEL = "nano-banana-2"
+IMAGE_MODEL = "nano-banana-2"  # или "nano-banana-pro" - выбирается в Настройках
 IMAGE_QUALITY = "auto"
 IMAGE_ASPECT_RATIO = "landscape"
 
@@ -255,9 +255,9 @@ def _api_request(method, path, api_key, payload=None):
     return json.loads(body)
 
 
-def submit_image_job(prompt, api_key):
+def submit_image_job(prompt, api_key, model=IMAGE_MODEL):
     payload = {
-        "model": IMAGE_MODEL,
+        "model": model,
         "input": {
             "prompt": prompt,
             "aspect_ratio": IMAGE_ASPECT_RATIO,
@@ -454,13 +454,17 @@ def _run_tasks_parallel(tasks, worker_fn, max_parallel, log):
 # ---------------------------------------------------------------------------
 
 def generate_images(csv_path, library_path, output_dir, api_key, log=print,
-                     limit=None, should_stop=None, max_parallel=DEFAULT_MAX_PARALLEL):
+                     limit=None, should_stop=None, max_parallel=DEFAULT_MAX_PARALLEL,
+                     image_model=IMAGE_MODEL):
     """Для каждой сцены в CSV отправляет img_prompt_1 и img_prompt_2 в
     RoyalTechno, скачивает сырые (не апскейленные) картинки в output_dir
     с именами {num}_{which}_raw.jpg - такое же имя, которое ожидает
     апскейл на RunPod. Уже готовые файлы не перегенерируются. До
     max_parallel сцен обрабатываются одновременно (по умолчанию 3, как
     позволяет обычный тариф RoyalTechno).
+
+    image_model - "nano-banana-2" (по умолчанию) или "nano-banana-pro"
+    (выбирается в Настройках).
 
     should_stop - необязательная функция без аргументов, возвращающая
     True, если нужно прервать процесс (для кнопки отмены)."""
@@ -520,7 +524,7 @@ def generate_images(csv_path, library_path, output_dir, api_key, log=print,
         log(f"=== Сцена {num} ({which}) - запрос картинки в RoyalTechno...")
         try:
             result = _submit_and_wait_with_retries(
-                lambda: submit_image_job(full_prompt, api_key),
+                lambda: submit_image_job(full_prompt, api_key, model=image_model),
                 api_key, log, f"картинка {num}/{which}",
                 should_stop=should_stop,
             )

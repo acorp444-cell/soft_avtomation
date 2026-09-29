@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
     "lumean_api_key": "",
     "royaltechno_api_key": "",
     "royaltechno_max_parallel": "3",
+    "royaltechno_image_model": "nano-banana-2",
     "lumean_template_id": "01a00ab2-3a8a-716c-b0f5-e205530b39d3",
     "hw_encoder": "none",
     "video_resolution": "720p",  # пока у RoyalTechno задержки с апскейлом до 1080p
@@ -618,6 +619,18 @@ class App(tk.Tk):
             settings_entry.pack(fill="x", expand=True, pady=(2, 0))
             self._add_context_menu(settings_entry)
 
+        rt_model_row = ttk.Frame(frame)
+        rt_model_row.pack(fill="x", padx=10, pady=4)
+        ttk.Label(rt_model_row, text="RoyalTechno: модель для картинок").pack(anchor="w")
+        rt_model_var = tk.StringVar(value=self.config_data.get("royaltechno_image_model", "nano-banana-2"))
+        self.settings_vars["royaltechno_image_model"] = rt_model_var
+        ttk.Combobox(rt_model_row, textvariable=rt_model_var, width=20, state="readonly",
+                     values=["nano-banana-2", "nano-banana-pro"]).pack(anchor="w", pady=(2, 0))
+        ttk.Label(frame,
+                  text="nano-banana-pro обычно даёт более качественную картинку, но дороже - "
+                       "цена по факту зависит от тарифа RoyalTechno.",
+                  foreground="#888888", wraplength=600).pack(anchor="w", padx=10, pady=(0, 4))
+
         hw_row = ttk.Frame(frame)
         hw_row.pack(fill="x", padx=10, pady=4)
         ttk.Label(hw_row, text="Сборка видео (кнопка 12): кодирование через видеокарту").pack(anchor="w")
@@ -1133,6 +1146,7 @@ class App(tk.Tk):
                 "generate_videos": google_generate.generate_videos_from_upscaled,
                 "api_key": self.config_data.get("google_api_key"),
                 "max_parallel": self.get_google_max_parallel(),
+                "image_kwargs": {},
             }
         return {
             "name": "RoyalTechno",
@@ -1140,6 +1154,9 @@ class App(tk.Tk):
             "generate_videos": royaltechno_generate.generate_videos_from_upscaled,
             "api_key": self.config_data.get("royaltechno_api_key"),
             "max_parallel": self.get_royaltechno_max_parallel(),
+            "image_kwargs": {
+                "image_model": self.config_data.get("royaltechno_image_model", "nano-banana-2"),
+            },
         }
 
     def on_generate_library(self):
@@ -2057,7 +2074,7 @@ class App(tk.Tk):
         provider["generate_images"](str(local_csv), str(local_library), str(raw_dir), provider["api_key"],
                                      log=self.log, limit=limit,
                                      should_stop=lambda: self.local_gen_cancel_event.is_set(),
-                                     max_parallel=provider["max_parallel"])
+                                     max_parallel=provider["max_parallel"], **provider["image_kwargs"])
 
     def on_browse_local_gen_source_dir(self):
         folder = filedialog.askdirectory(title="Папка с уже скачанными CSV (например, результаты)")
@@ -2250,7 +2267,7 @@ class App(tk.Tk):
         provider["generate_images"](str(local_csv), str(local_library), str(raw_dir), provider["api_key"],
                                      log=self.log, limit=limit,
                                      should_stop=lambda: self.local_gen_cancel_event.is_set(),
-                                     max_parallel=provider["max_parallel"])
+                                     max_parallel=provider["max_parallel"], **provider["image_kwargs"])
 
     def on_upscale_on_runpod(self):
         local_dir = filedialog.askdirectory(
