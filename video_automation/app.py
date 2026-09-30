@@ -2038,6 +2038,18 @@ class App(tk.Tk):
                 download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(images_dir / filename))
             remote_paths_to_remove += [f"{COMFYUI_OUTPUT_REMOTE_DIR}/{f}" for f in matching_images]
             self.log(f"{prefix}[+] Картинок скачано: {len(matching_images)}")
+
+            # сырые картинки (ComfyUI/input) для сцен, чей апскейл уже
+            # скачан, больше никогда не понадобятся (апскейл их уже
+            # использовал) - в отличие от output, эту папку можно чистить
+            # по-настоящему (rm), не обнуляя: она не участвует в проверке
+            # "сцена уже готова" - только в "сырая картинка ещё не
+            # скачана" (см. process_scene_image), а для готовой сцены это
+            # уже неважно
+            succeeded_prefixes = {p for p in image_prefixes if any(f.startswith(p + "_") for f in matching_images)}
+            raw_paths = " ".join(f'"{COMFYUI_INPUT_REMOTE_DIR}/{p}_raw.jpg"' for p in succeeded_prefixes)
+            run_command(client, f"rm -f {raw_paths}", on_output=lambda _: None)
+            self.log(f"{prefix}[+] Удалены отработавшие сырые картинки на сервере: {len(succeeded_prefixes)}")
         else:
             self.log(f"{prefix}[i] Готовых картинок на сервере не найдено")
 
