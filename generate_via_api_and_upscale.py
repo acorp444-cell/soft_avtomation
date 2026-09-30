@@ -398,20 +398,29 @@ def process_scene_image(num, which, full_prompt, upscale_template):
     отдельная, независимая очередь, см. process_scene_video). Возвращает
     путь к готовому апскейленному файлу. Бросает исключение при ошибке
     (её печатает вызывающий код)."""
-    # 1. Отправляем в API
-    job_id = submit_image_job(full_prompt)
-    print(f"[+] Сцена {num} ({which}): задача отправлена в API, id: {job_id}")
-
-    # 2. Ждём готовности
-    result = wait_for_job(job_id)
-    image_url = result["output"]["url"]
-    cost = result.get("cost_usd_cents", 0)
-    print(f"[+] Сцена {num} ({which}): картинка готова. Стоимость: {cost} центов.")
-
-    # 3. Скачиваем картинку в ComfyUI/input
     raw_filename = f"{num}_{which}_raw.jpg"
     raw_path = os.path.join(COMFYUI_INPUT_DIR, raw_filename)
-    download_image(image_url, raw_path)
+
+    if os.path.exists(raw_path):
+        # сырая картинка уже скачана в прошлый раз, а апскейл, видимо,
+        # прервался (например, нажали "Стоп" как раз между скачиванием и
+        # апскейлом) - НЕ заказываем картинку у RoyalTechno заново, она
+        # уже оплачена, сразу апскейлим то, что есть
+        print(f"[i] Сцена {num} ({which}): сырая картинка уже скачана ранее - "
+              f"заново не заказываю, сразу апскейлю существующий файл.")
+    else:
+        # 1. Отправляем в API
+        job_id = submit_image_job(full_prompt)
+        print(f"[+] Сцена {num} ({which}): задача отправлена в API, id: {job_id}")
+
+        # 2. Ждём готовности
+        result = wait_for_job(job_id)
+        image_url = result["output"]["url"]
+        cost = result.get("cost_usd_cents", 0)
+        print(f"[+] Сцена {num} ({which}): картинка готова. Стоимость: {cost} центов.")
+
+        # 3. Скачиваем картинку в ComfyUI/input
+        download_image(image_url, raw_path)
 
     # 4. Апскейл через локальный ComfyUI - ЖДЁМ завершения (нужен готовый
     #    файл, чтобы можно было сразу поставить видео в очередь)
