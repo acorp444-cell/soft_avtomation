@@ -42,6 +42,7 @@ COMFYUI_INPUT_REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/input"
 COMFYUI_OUTPUT_REMOTE_DIR = "/workspace/runpod-slim/ComfyUI/output"
 PREVIEW_REMOTE_DIR = f"{REMOTE_DIR}/превью"
 LOCAL_GENERATION_DIR = Path(__file__).resolve().parent / "local_generation"
+VIDEO_RESULTS_DIR = Path(__file__).resolve().parent / "результаты"  # сюда падают готовые видео из шага "4" (очередь картинки+видео через RunPod)
 
 DEFAULT_CONFIG = {
     "runpod_api_key": "",
@@ -1942,6 +1943,11 @@ class App(tk.Tk):
             exit_code = run_command(client, full_command, on_output=lambda line: self.log(f"{prefix}{line}"))
 
             if exit_code == 0:
+                self._set_queue_status(csv_name, "🔵 Скачиваю готовые видео...")
+                try:
+                    self._download_and_cleanup_videos(client, csv_name, prefix)
+                except Exception as e:
+                    self.log(f"{prefix}[!] Не удалось скачать готовые видео: {e}")
                 self._set_queue_status(csv_name, "✅ Готово")
             else:
                 self._set_queue_status(csv_name, f"❌ Ошибка (код {exit_code}) - смотри журнал")
@@ -1951,6 +1957,44 @@ class App(tk.Tk):
         finally:
             if acquired:
                 self.gen_semaphore.release()
+
+    def _download_and_cleanup_videos(self, client, csv_name, prefix):
+        """Скачивает готовые видео этого блока с RunPod в локальную папку
+        результаты/<блок>/video/ и сразу удаляет их на сервере - чтобы не
+        нужно было потом отдельно искать/скачивать архивом, и чтобы папка
+        output на сервере не копила видео всех прошлых блоков навсегда."""
+        block_name = csv_name[:-4] if csv_name.lower().endswith(".csv") else csv_name
+
+        local_csv = VIDEO_RESULTS_DIR / block_name / f"{block_name}.csv"
+        local_csv.parent.mkdir(parents=True, exist_ok=True)
+        download_file(client, f"{REMOTE_DIR}/результаты/{csv_name}", str(local_csv))
+
+        nums = set()
+        with open(local_csv, "r", encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f, delimiter=";"):
+                num = (row.get("num") or "").strip()
+                if num:
+                    nums.add(num)
+        if not nums:
+            return
+
+        prefixes = {f"{n}_img1_video.mp4" for n in nums} | {f"{n}_img2_video.mp4" for n in nums}
+        remote_files = list_remote_files(client, COMFYUI_OUTPUT_REMOTE_DIR, ".mp4")
+        matching = [f for f in remote_files if f in prefixes]
+        if not matching:
+            self.log(f"{prefix}[i] Готовых видео на сервере не найдено (возможно, ни одна сцена не animate=TRUE)")
+            return
+
+        video_dir = VIDEO_RESULTS_DIR / block_name / "video"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        self.log(f"\n{prefix}>>> Скачиваю {len(matching)} готовых видео в {video_dir}...\n")
+        for i, filename in enumerate(matching, 1):
+            self.log(f"{prefix}  [{i}/{len(matching)}] {filename}...")
+            download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(video_dir / filename))
+
+        remote_paths = " ".join(f'"{COMFYUI_OUTPUT_REMOTE_DIR}/{f}"' for f in matching)
+        run_command(client, f"rm -f {remote_paths}", on_output=lambda _: None)
+        self.log(f"{prefix}[+] Скачано и удалено с сервера: {len(matching)} видео")
 
     def on_clear_finished_queue(self):
         for csv_name in list(self.queue_blocks):
