@@ -1970,11 +1970,11 @@ class App(tk.Tk):
             exit_code = run_command(client, full_command, on_output=lambda line: self.log(f"{prefix}{line}"))
 
             if exit_code == 0:
-                self._set_queue_status(csv_name, "🔵 Скачиваю готовые видео...")
+                self._set_queue_status(csv_name, "🔵 Скачиваю готовые картинки и видео...")
                 try:
                     self._download_and_cleanup_videos(client, csv_name, prefix)
                 except Exception as e:
-                    self.log(f"{prefix}[!] Не удалось скачать готовые видео: {e}")
+                    self.log(f"{prefix}[!] Не удалось скачать готовые картинки/видео: {e}")
                 self._set_queue_status(csv_name, "✅ Готово")
             else:
                 self._set_queue_status(csv_name, f"❌ Ошибка (код {exit_code}) - смотри журнал")
@@ -1986,10 +1986,11 @@ class App(tk.Tk):
                 self.gen_semaphore.release()
 
     def _download_and_cleanup_videos(self, client, csv_name, prefix):
-        """Скачивает готовые видео этого блока с RunPod в локальную папку
-        результаты/<блок>/video/ и сразу удаляет их на сервере - чтобы не
-        нужно было потом отдельно искать/скачивать архивом, и чтобы папка
-        output на сервере не копила видео всех прошлых блоков навсегда."""
+        """Скачивает готовые видео И финальные (уже апскейленные) картинки
+        этого блока с RunPod в локальную папку результаты/<блок>/ и сразу
+        удаляет их на сервере - чтобы не нужно было потом отдельно искать/
+        скачивать архивом, и чтобы папка output на сервере не копила файлы
+        всех прошлых блоков навсегда."""
         block_name = csv_name[:-4] if csv_name.lower().endswith(".csv") else csv_name
 
         local_csv = VIDEO_RESULTS_DIR / block_name / f"{block_name}.csv"
@@ -2005,23 +2006,45 @@ class App(tk.Tk):
         if not nums:
             return
 
-        prefixes = {f"{n}_img1_video.mp4" for n in nums} | {f"{n}_img2_video.mp4" for n in nums}
-        remote_files = list_remote_files(client, COMFYUI_OUTPUT_REMOTE_DIR, ".mp4")
-        matching = [f for f in remote_files if f in prefixes]
-        if not matching:
+        remote_paths_to_remove = []
+
+        video_names = {f"{n}_img1_video.mp4" for n in nums} | {f"{n}_img2_video.mp4" for n in nums}
+        remote_mp4 = list_remote_files(client, COMFYUI_OUTPUT_REMOTE_DIR, ".mp4")
+        matching_video = [f for f in remote_mp4 if f in video_names]
+        if matching_video:
+            video_dir = VIDEO_RESULTS_DIR / block_name / "video"
+            video_dir.mkdir(parents=True, exist_ok=True)
+            self.log(f"\n{prefix}>>> Скачиваю {len(matching_video)} готовых видео в {video_dir}...\n")
+            for i, filename in enumerate(matching_video, 1):
+                self.log(f"{prefix}  [{i}/{len(matching_video)}] {filename}...")
+                download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(video_dir / filename))
+            remote_paths_to_remove += [f"{COMFYUI_OUTPUT_REMOTE_DIR}/{f}" for f in matching_video]
+            self.log(f"{prefix}[+] Видео скачано: {len(matching_video)}")
+        else:
             self.log(f"{prefix}[i] Готовых видео на сервере не найдено (возможно, ни одна сцена не animate=TRUE)")
-            return
 
-        video_dir = VIDEO_RESULTS_DIR / block_name / "video"
-        video_dir.mkdir(parents=True, exist_ok=True)
-        self.log(f"\n{prefix}>>> Скачиваю {len(matching)} готовых видео в {video_dir}...\n")
-        for i, filename in enumerate(matching, 1):
-            self.log(f"{prefix}  [{i}/{len(matching)}] {filename}...")
-            download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(video_dir / filename))
+        # картинки после апскейла - ComfyUI дописывает свой счётчик к
+        # имени файла (например 075_img1_00001_.png), поэтому ищем по
+        # началу имени, а не по точному совпадению, как с видео
+        image_prefixes = {f"{n}_img1" for n in nums} | {f"{n}_img2" for n in nums}
+        remote_png = list_remote_files(client, COMFYUI_OUTPUT_REMOTE_DIR, ".png")
+        matching_images = [f for f in remote_png if any(f.startswith(p + "_") for p in image_prefixes)]
+        if matching_images:
+            images_dir = VIDEO_RESULTS_DIR / block_name / "картинки"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            self.log(f"\n{prefix}>>> Скачиваю {len(matching_images)} готовых картинок в {images_dir}...\n")
+            for i, filename in enumerate(matching_images, 1):
+                self.log(f"{prefix}  [{i}/{len(matching_images)}] {filename}...")
+                download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(images_dir / filename))
+            remote_paths_to_remove += [f"{COMFYUI_OUTPUT_REMOTE_DIR}/{f}" for f in matching_images]
+            self.log(f"{prefix}[+] Картинок скачано: {len(matching_images)}")
+        else:
+            self.log(f"{prefix}[i] Готовых картинок на сервере не найдено")
 
-        remote_paths = " ".join(f'"{COMFYUI_OUTPUT_REMOTE_DIR}/{f}"' for f in matching)
-        run_command(client, f"rm -f {remote_paths}", on_output=lambda _: None)
-        self.log(f"{prefix}[+] Скачано и удалено с сервера: {len(matching)} видео")
+        if remote_paths_to_remove:
+            remote_paths = " ".join(f'"{p}"' for p in remote_paths_to_remove)
+            run_command(client, f"rm -f {remote_paths}", on_output=lambda _: None)
+            self.log(f"{prefix}[+] Удалено с сервера: {len(remote_paths_to_remove)} файл(ов)")
 
     def on_clear_finished_queue(self):
         for csv_name in list(self.queue_blocks):
