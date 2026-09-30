@@ -46,7 +46,9 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.request
 
@@ -511,6 +513,9 @@ def main():
     parser.add_argument("--video-resolution", choices=["1080p", "720p"], default=None,
                          help="Переопределить разрешение видео (Veo) - например 720p, если "
                               "RoyalTechno сообщает о задержках с апскейлом до 1080p")
+    parser.add_argument("--max-parallel", type=int, default=3,
+                         help="Сколько сцен обрабатывать одновременно (по умолчанию 3, как "
+                              "позволяет обычный тариф RoyalTechno)")
     args = parser.parse_args()
 
     csv_path = os.path.join(BASE_DIR, args.csv) if args.csv else CSV_PATH
@@ -541,8 +546,11 @@ def main():
 
     upscale_template = load_upscale_template() if args.run else None
 
-    failed_scenes = []
-
+    # сначала собираем список сцен, которые реально нужно обрабатывать
+    # (печатаем промты сразу тут же, по порядку - для сухого прогона это
+    # единственное, что вообще происходит) - а саму генерацию запускаем
+    # параллельно ниже, а не по одной сцене за раз
+    tasks = []
     for row in rows:
         num = row.get("num", "").strip()
         if not num or not row.get("img_prompt_1", "").strip():
@@ -570,22 +578,39 @@ def main():
                 print(f"[=] Сцена {num} ({which}) уже готова, пропускаю (экономим деньги).")
                 continue
 
-            success = False
-            for attempt in range(1, MAX_RETRIES + 1):
-                if attempt > 1:
-                    print(f"[i] Попытка {attempt}/{MAX_RETRIES} для сцены {num} ({which})...")
-                success = process_scene(num, which, full_prompt, row, upscale_template)
-                if success:
-                    break
-                if attempt < MAX_RETRIES:
-                    print(f"[!] Жду {RETRY_DELAY_SEC} сек перед следующей попыткой...")
-                    time.sleep(RETRY_DELAY_SEC)
+            tasks.append((num, which, full_prompt, row))
 
-            if not success:
-                print(f"[!!!] Сцена {num} ({which}) не удалась после {MAX_RETRIES} попыток.")
+    if not args.run:
+        return
+
+    if not tasks:
+        print("\nВсе сцены уже готовы, обрабатывать нечего.")
+        return
+
+    failed_scenes = []
+    failed_lock = threading.Lock()
+
+    def process_with_retries(task):
+        num, which, full_prompt, row = task
+        success = False
+        for attempt in range(1, MAX_RETRIES + 1):
+            if attempt > 1:
+                print(f"[i] Попытка {attempt}/{MAX_RETRIES} для сцены {num} ({which})...")
+            success = process_scene(num, which, full_prompt, row, upscale_template)
+            if success:
+                break
+            if attempt < MAX_RETRIES:
+                print(f"[!] Жду {RETRY_DELAY_SEC} сек перед следующей попыткой...")
+                time.sleep(RETRY_DELAY_SEC)
+
+        if not success:
+            print(f"[!!!] Сцена {num} ({which}) не удалась после {MAX_RETRIES} попыток.")
+            with failed_lock:
                 failed_scenes.append(f"{num} ({which})")
 
-            time.sleep(1)
+    print(f"\n[i] Запускаю с параллелизмом {args.max_parallel} (как позволяет тариф RoyalTechno)...")
+    with ThreadPoolExecutor(max_workers=args.max_parallel) as executor:
+        list(executor.map(process_with_retries, tasks))
 
     print("\nГотово. Финальные картинки появятся в ComfyUI/output через несколько секунд после апскейла.")
 

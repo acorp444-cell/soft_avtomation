@@ -1928,7 +1928,7 @@ class App(tk.Tk):
             self._set_queue_status(csv_name, "🔵 Генерируется...")
             resolution = self.config_data.get("video_resolution", "1080p")
             cmd = (f'python3 generate_via_api_and_upscale.py --run --csv "результаты/{csv_name}" '
-                   f'--video-resolution {resolution}')
+                   f'--video-resolution {resolution} --max-parallel {self.get_royaltechno_max_parallel()}')
             prefix = f"[{csv_name}] "
 
             api_key = self.config_data.get("runpod_api_key")
