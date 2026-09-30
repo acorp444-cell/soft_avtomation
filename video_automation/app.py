@@ -1889,7 +1889,8 @@ class App(tk.Tk):
         if not raw:
             messagebox.showinfo("Не заполнено", "Впиши имена CSV-файлов через запятую")
             return
-        csv_files = [c.strip() for c in raw.split(",") if c.strip()]
+        csv_files = [c.strip() if c.strip().lower().endswith(".csv") else c.strip() + ".csv"
+                     for c in raw.split(",") if c.strip()]
 
         added = 0
         for csv_name in csv_files:
@@ -1965,7 +1966,8 @@ class App(tk.Tk):
         if not raw:
             messagebox.showinfo("Не заполнено", "Впиши имена CSV-файлов через запятую")
             return
-        csv_files = [c.strip() for c in raw.split(",") if c.strip()]
+        csv_files = [c.strip() if c.strip().lower().endswith(".csv") else c.strip() + ".csv"
+                     for c in raw.split(",") if c.strip()]
 
         added = 0
         for csv_name in csv_files:
