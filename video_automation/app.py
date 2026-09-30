@@ -2042,9 +2042,18 @@ class App(tk.Tk):
             self.log(f"{prefix}[i] Готовых картинок на сервере не найдено")
 
         if remote_paths_to_remove:
+            # НЕ удаляем файлы полностью (rm), а обнуляем их до 0 байт -
+            # generate_via_api_and_upscale.py при повторном запуске того же
+            # блока (например, после перезапуска программы) проверяет
+            # "эта сцена уже готова?" именно по наличию файла с таким именем
+            # в ComfyUI/output. Если файл исчезнет совсем - скрипт решит,
+            # что сцена не готова, и сгенерирует её заново, потратив деньги
+            # повторно. Обнулённый файл занимает места ~0 (то, ради чего и
+            # затевалась чистка), но по-прежнему "существует" для проверки.
             remote_paths = " ".join(f'"{p}"' for p in remote_paths_to_remove)
-            run_command(client, f"rm -f {remote_paths}", on_output=lambda _: None)
-            self.log(f"{prefix}[+] Удалено с сервера: {len(remote_paths_to_remove)} файл(ов)")
+            run_command(client, f"truncate -s 0 {remote_paths}", on_output=lambda _: None)
+            self.log(f"{prefix}[+] Освобождено место на сервере (файлы обнулены, но не удалены - "
+                      f"чтобы повторный запуск не сгенерировал их заново): {len(remote_paths_to_remove)} файл(ов)")
 
     def on_clear_finished_queue(self):
         for csv_name in list(self.queue_blocks):
