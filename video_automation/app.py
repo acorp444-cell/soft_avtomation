@@ -52,12 +52,14 @@ DEFAULT_CONFIG = {
     "lumean_api_key": "",
     "royaltechno_api_key": "",
     "royaltechno_max_parallel": "3",
+    "royaltechno_max_parallel_video": "3",
     "royaltechno_image_model": "nano-banana-2",
     "lumean_template_id": "01a00ab2-3a8a-716c-b0f5-e205530b39d3",
     "hw_encoder": "none",
     "video_resolution": "720p",  # пока у RoyalTechno задержки с апскейлом до 1080p
     "google_api_key": "",
     "google_max_parallel": "2",
+    "google_max_parallel_video": "2",
     "image_video_provider": "royaltechno",
 }
 
@@ -616,9 +618,11 @@ class App(tk.Tk):
             ("lumean_api_key", "Lumean API-ключ (озвучка)"),
             ("lumean_template_id", "Lumean template_id (голос)"),
             ("royaltechno_api_key", "RoyalTechno API-ключ (картинки/видео)"),
-            ("royaltechno_max_parallel", "RoyalTechno: сколько сцен генерировать одновременно (по тарифу)"),
+            ("royaltechno_max_parallel", "RoyalTechno: сколько КАРТИНОК генерировать одновременно (по тарифу)"),
+            ("royaltechno_max_parallel_video", "RoyalTechno: сколько ВИДЕО генерировать одновременно (по тарифу, независимо от картинок)"),
             ("google_api_key", "Google AI Studio API-ключ (запасной вариант для картинок/видео)"),
-            ("google_max_parallel", "Google: сколько сцен генерировать одновременно"),
+            ("google_max_parallel", "Google: сколько КАРТИНОК генерировать одновременно"),
+            ("google_max_parallel_video", "Google: сколько ВИДЕО генерировать одновременно (независимо от картинок)"),
         ]
         for key, label in fields:
             row = ttk.Frame(frame)
@@ -1190,8 +1194,24 @@ class App(tk.Tk):
         except ValueError:
             return 3
 
+    def get_royaltechno_max_parallel_video(self) -> int:
+        raw = str(self.config_data.get("royaltechno_max_parallel_video", "3")).strip()
+        try:
+            value = int(raw)
+            return value if value > 0 else 3
+        except ValueError:
+            return 3
+
     def get_google_max_parallel(self) -> int:
         raw = str(self.config_data.get("google_max_parallel", "2")).strip()
+        try:
+            value = int(raw)
+            return value if value > 0 else 2
+        except ValueError:
+            return 2
+
+    def get_google_max_parallel_video(self) -> int:
+        raw = str(self.config_data.get("google_max_parallel_video", "2")).strip()
         try:
             value = int(raw)
             return value if value > 0 else 2
@@ -1202,7 +1222,10 @@ class App(tk.Tk):
         """Возвращает словарь с тем, какой провайдер сейчас выбран для
         генерации картинок/видео без RunPod (шаги A и C) - RoyalTechno
         (по умолчанию) или Google (Gemini/Veo напрямую, запасной вариант
-        на случай, если RoyalTechno недоступен или медленный)."""
+        на случай, если RoyalTechno недоступен или медленный). Картинки и
+        видео - независимые очереди (см. _run_queued_local_generation /
+        _run_queued_video_generation), поэтому у каждой свой параллелизм
+        (max_parallel / max_parallel_video)."""
         provider = self.config_data.get("image_video_provider", "royaltechno")
         if provider == "google":
             return {
@@ -1211,6 +1234,7 @@ class App(tk.Tk):
                 "generate_videos": google_generate.generate_videos_from_upscaled,
                 "api_key": self.config_data.get("google_api_key"),
                 "max_parallel": self.get_google_max_parallel(),
+                "max_parallel_video": self.get_google_max_parallel_video(),
                 "image_kwargs": {},
             }
         return {
@@ -1219,6 +1243,7 @@ class App(tk.Tk):
             "generate_videos": royaltechno_generate.generate_videos_from_upscaled,
             "api_key": self.config_data.get("royaltechno_api_key"),
             "max_parallel": self.get_royaltechno_max_parallel(),
+            "max_parallel_video": self.get_royaltechno_max_parallel_video(),
             "image_kwargs": {
                 "image_model": self.config_data.get("royaltechno_image_model", "nano-banana-2"),
             },
@@ -1928,7 +1953,9 @@ class App(tk.Tk):
             self._set_queue_status(csv_name, "🔵 Генерируется...")
             resolution = self.config_data.get("video_resolution", "1080p")
             cmd = (f'python3 generate_via_api_and_upscale.py --run --csv "результаты/{csv_name}" '
-                   f'--video-resolution {resolution} --max-parallel {self.get_royaltechno_max_parallel()}')
+                   f'--video-resolution {resolution} '
+                   f'--max-parallel-images {self.get_royaltechno_max_parallel()} '
+                   f'--max-parallel-video {self.get_royaltechno_max_parallel_video()}')
             prefix = f"[{csv_name}] "
 
             api_key = self.config_data.get("runpod_api_key")
@@ -2661,7 +2688,7 @@ class App(tk.Tk):
                   f"({resolution}, папка: {video_dir})...\n")
         provider["generate_videos"](str(local_csv), str(upscaled_dir), str(video_dir), provider["api_key"],
                                      log=self.log, should_stop=lambda: self.local_gen_cancel_event.is_set(),
-                                     max_parallel=provider["max_parallel"], resolution=resolution)
+                                     max_parallel=provider["max_parallel_video"], resolution=resolution)
 
     def on_openai_batch_submit(self):
         raw = self.openai_batch_csv_var.get().strip()

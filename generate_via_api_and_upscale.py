@@ -406,74 +406,65 @@ def _image_to_data_uri(image_path):
     return f"data:image/jpeg;base64,{encoded}"
 
 
-def process_scene(num, which, full_prompt, row, upscale_template):
-    """Обрабатывает одну сцену (картинка + апскейл + видео, если нужно).
-    Возвращает True при успехе, False при ошибке (ошибка печатается сама)."""
+def process_scene_image(num, which, full_prompt, upscale_template):
+    """Картинка + апскейл для одной сцены (без видео - видео теперь
+    отдельная, независимая очередь, см. process_scene_video). Возвращает
+    путь к готовому апскейленному файлу. Бросает исключение при ошибке
+    (её печатает вызывающий код)."""
+    # 1. Отправляем в API
+    job_id = submit_image_job(full_prompt)
+    print(f"[+] Сцена {num} ({which}): задача отправлена в API, id: {job_id}")
+
+    # 2. Ждём готовности
+    result = wait_for_job(job_id)
+    image_url = result["output"]["url"]
+    cost = result.get("cost_usd_cents", 0)
+    print(f"[+] Сцена {num} ({which}): картинка готова. Стоимость: {cost} центов.")
+
+    # 3. Скачиваем картинку в ComfyUI/input
+    raw_filename = f"{num}_{which}_raw.jpg"
+    raw_path = os.path.join(COMFYUI_INPUT_DIR, raw_filename)
+    download_image(image_url, raw_path)
+
+    # 4. Апскейл через локальный ComfyUI - ЖДЁМ завершения (нужен готовый
+    #    файл, чтобы можно было сразу поставить видео в очередь)
+    prefix = f"{num}_{which}"
+    upscale_result = queue_upscale(upscale_template, raw_filename, prefix)
+    upscale_prompt_id = upscale_result.get("prompt_id")
+    print(f"[+] Сцена {num} ({which}): отправлено на апскейл, жду завершения...")
+    wait_for_comfy_job(upscale_prompt_id)
+    upscaled_path = find_upscaled_file(prefix)
+    if not upscaled_path:
+        raise RuntimeError(f"Апскейл {prefix} завершился, но файл результата "
+                            f"не найден в {COMFYUI_OUTPUT_DIR}")
+    print(f"[+] Сцена {num} ({which}): апскейл готов: {upscaled_path}")
+    return upscaled_path
+
+
+def process_scene_video(num, which, video_prompt, upscaled_path):
+    """Видео из уже готовой (апскейленной) картинки - отдельная задача от
+    process_scene_image, ставится в СВОЮ, независимую очередь сразу же,
+    как только картинка этой сцены готова, не дожидаясь остальных сцен."""
+    start_image_source = _image_to_data_uri(upscaled_path)
+    video_job_id = submit_video_job(video_prompt, start_image_source)
+    print(f"[+] Сцена {num} ({which}): видео-задача отправлена, id: {video_job_id}")
+    video_result = wait_for_job(video_job_id, timeout_sec=VIDEO_POLL_TIMEOUT_SEC)
+    video_url = video_result["output"]["url"]
+    video_cost = video_result.get("cost_usd_cents", 0)
+    print(f"[+] Сцена {num} ({which}): видео готово. Стоимость: {video_cost} центов.")
+
+    video_filename = f"{num}_{which}_video.mp4"
+    video_path = os.path.join(COMFYUI_OUTPUT_DIR, video_filename)
+    req = urllib.request.Request(video_url, headers={"User-Agent": BROWSER_USER_AGENT})
     try:
-        # 1. Отправляем в API
-        job_id = submit_image_job(full_prompt)
-        print(f"[+] Задача отправлена в API, id: {job_id}")
-
-        # 2. Ждём готовности
-        result = wait_for_job(job_id)
-        image_url = result["output"]["url"]
-        cost = result.get("cost_usd_cents", 0)
-        print(f"[+] Готово. Стоимость: {cost} центов. URL: {image_url}")
-
-        # 3. Скачиваем картинку в ComfyUI/input
-        raw_filename = f"{num}_{which}_raw.jpg"
-        raw_path = os.path.join(COMFYUI_INPUT_DIR, raw_filename)
-        download_image(image_url, raw_path)
-        print(f"[+] Скачано в {raw_path}")
-
-        # 4. Апскейл через локальный ComfyUI - ЖДЁМ завершения (не "и
-        #    забыл", как было раньше), потому что видео ниже должно
-        #    делаться из уже апскейленной картинки, а не из сырой
-        prefix = f"{num}_{which}"
-        upscale_result = queue_upscale(upscale_template, raw_filename, prefix)
-        upscale_prompt_id = upscale_result.get("prompt_id")
-        print(f"[+] Отправлено на апскейл, id задачи ComfyUI: {upscale_prompt_id}, жду завершения...")
-        wait_for_comfy_job(upscale_prompt_id)
-        upscaled_path = find_upscaled_file(prefix)
-        if not upscaled_path:
-            raise RuntimeError(f"Апскейл {prefix} завершился, но файл результата "
-                                f"не найден в {COMFYUI_OUTPUT_DIR}")
-        print(f"[+] Апскейл готов: {upscaled_path}")
-
-        # 5. Если сцена помечена animate=TRUE — оживляем КАЖДУЮ картинку
-        #    (и img1, и img2) через Veo — получаем 2 видео на сцену.
-        #    Берём УЖЕ АПСКЕЙЛЕННУЮ картинку (не сырую) - иначе видео
-        #    получалось хуже качеством, чем финальные кадры-картинки.
-        animate_flag = row.get("animate", "").strip().upper()
-        video_prompt = row.get("video_prompt", "").strip()
-        if animate_flag == "TRUE" and video_prompt:
-            print(f"[i] Сцена {num} ({which}) помечена animate=TRUE, запускаю Veo...")
-            start_image_source = _image_to_data_uri(upscaled_path)
-            video_job_id = submit_video_job(video_prompt, start_image_source)
-            print(f"[+] Видео-задача отправлена, id: {video_job_id}")
-            video_result = wait_for_job(video_job_id, timeout_sec=VIDEO_POLL_TIMEOUT_SEC)
-            video_url = video_result["output"]["url"]
-            video_cost = video_result.get("cost_usd_cents", 0)
-            print(f"[+] Видео готово. Стоимость: {video_cost} центов. URL: {video_url}")
-
-            video_filename = f"{num}_{which}_video.mp4"
-            video_path = os.path.join(COMFYUI_OUTPUT_DIR, video_filename)
-            req = urllib.request.Request(video_url, headers={"User-Agent": BROWSER_USER_AGENT})
-            try:
-                with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SEC) as resp:
-                    video_data = resp.read()
-            except TimeoutError as e:
-                raise RuntimeError(
-                    f"Скачивание видео не ответило за {DOWNLOAD_TIMEOUT_SEC} сек: {video_url}") from e
-            with open(video_path, "wb") as f:
-                f.write(video_data)
-            print(f"[+] Видео сохранено: {video_path}")
-
-        return True
-
-    except Exception as e:
-        print(f"[!] Ошибка на сцене {num} ({which}): {e}")
-        return False
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SEC) as resp:
+            video_data = resp.read()
+    except TimeoutError as e:
+        raise RuntimeError(
+            f"Скачивание видео не ответило за {DOWNLOAD_TIMEOUT_SEC} сек: {video_url}") from e
+    with open(video_path, "wb") as f:
+        f.write(video_data)
+    print(f"[+] Сцена {num} ({which}): видео сохранено: {video_path}")
 
 
 def queue_upscale(template, input_filename, output_prefix):
@@ -513,9 +504,13 @@ def main():
     parser.add_argument("--video-resolution", choices=["1080p", "720p"], default=None,
                          help="Переопределить разрешение видео (Veo) - например 720p, если "
                               "RoyalTechno сообщает о задержках с апскейлом до 1080p")
-    parser.add_argument("--max-parallel", type=int, default=3,
-                         help="Сколько сцен обрабатывать одновременно (по умолчанию 3, как "
-                              "позволяет обычный тариф RoyalTechno)")
+    parser.add_argument("--max-parallel-images", type=int, default=3,
+                         help="Сколько картинок (+апскейл) обрабатывать одновременно (по "
+                              "умолчанию 3, как позволяет обычный тариф RoyalTechno)")
+    parser.add_argument("--max-parallel-video", type=int, default=3,
+                         help="Сколько видео генерировать одновременно (по умолчанию 3) - "
+                              "своя, независимая очередь: видео сцены запускается сразу, как "
+                              "только готова её картинка, не дожидаясь остальных сцен")
     args = parser.parse_args()
 
     csv_path = os.path.join(BASE_DIR, args.csv) if args.csv else CSV_PATH
@@ -589,30 +584,76 @@ def main():
 
     failed_scenes = []
     failed_lock = threading.Lock()
+    video_futures = []
+    video_futures_lock = threading.Lock()
 
-    def process_with_retries(task):
-        num, which, full_prompt, row = task
+    video_executor = ThreadPoolExecutor(max_workers=args.max_parallel_video)
+
+    def run_video_with_retries(num, which, video_prompt, upscaled_path):
         success = False
         for attempt in range(1, MAX_RETRIES + 1):
             if attempt > 1:
-                print(f"[i] Попытка {attempt}/{MAX_RETRIES} для сцены {num} ({which})...")
-            success = process_scene(num, which, full_prompt, row, upscale_template)
-            if success:
+                print(f"[i] Сцена {num} ({which}): попытка видео {attempt}/{MAX_RETRIES}...")
+            try:
+                process_scene_video(num, which, video_prompt, upscaled_path)
+                success = True
                 break
-            if attempt < MAX_RETRIES:
-                print(f"[!] Жду {RETRY_DELAY_SEC} сек перед следующей попыткой...")
-                time.sleep(RETRY_DELAY_SEC)
-
+            except Exception as e:
+                print(f"[!] Сцена {num} ({which}): ошибка видео: {e}")
+                if attempt < MAX_RETRIES:
+                    print(f"[!] Жду {RETRY_DELAY_SEC} сек перед следующей попыткой...")
+                    time.sleep(RETRY_DELAY_SEC)
         if not success:
-            print(f"[!!!] Сцена {num} ({which}) не удалась после {MAX_RETRIES} попыток.")
+            print(f"[!!!] Сцена {num} ({which}): видео не удалось после {MAX_RETRIES} попыток.")
             with failed_lock:
-                failed_scenes.append(f"{num} ({which})")
+                failed_scenes.append(f"{num} ({which}) - видео")
 
-    print(f"\n[i] Запускаю с параллелизмом {args.max_parallel} (как позволяет тариф RoyalTechno)...")
-    with ThreadPoolExecutor(max_workers=args.max_parallel) as executor:
-        list(executor.map(process_with_retries, tasks))
+    def run_image_with_retries(task):
+        num, which, full_prompt, row = task
+        upscaled_path = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            if attempt > 1:
+                print(f"[i] Сцена {num} ({which}): попытка картинки {attempt}/{MAX_RETRIES}...")
+            try:
+                upscaled_path = process_scene_image(num, which, full_prompt, upscale_template)
+                break
+            except Exception as e:
+                print(f"[!] Сцена {num} ({which}): ошибка картинки: {e}")
+                if attempt < MAX_RETRIES:
+                    print(f"[!] Жду {RETRY_DELAY_SEC} сек перед следующей попыткой...")
+                    time.sleep(RETRY_DELAY_SEC)
 
-    print("\nГотово. Финальные картинки появятся в ComfyUI/output через несколько секунд после апскейла.")
+        if upscaled_path is None:
+            print(f"[!!!] Сцена {num} ({which}): картинка не удалась после {MAX_RETRIES} попыток.")
+            with failed_lock:
+                failed_scenes.append(f"{num} ({which}) - картинка")
+            return
+
+        # видео этой сцены ставим в очередь СРАЗУ, не дожидаясь остальных
+        # картинок - картинки и видео теперь две независимые очереди
+        animate_flag = task[3].get("animate", "").strip().upper()
+        video_prompt = task[3].get("video_prompt", "").strip()
+        if animate_flag == "TRUE" and video_prompt:
+            future = video_executor.submit(run_video_with_retries, num, which, video_prompt, upscaled_path)
+            with video_futures_lock:
+                video_futures.append(future)
+
+    print(f"\n[i] Запускаю картинки (+ апскейл) с параллелизмом {args.max_parallel_images}, "
+          f"видео - с параллелизмом {args.max_parallel_video} (своя очередь: видео сцены "
+          f"стартует сразу, как только готова её картинка, не дожидаясь остальных сцен)...")
+    with ThreadPoolExecutor(max_workers=args.max_parallel_images) as image_executor:
+        image_futures = [image_executor.submit(run_image_with_retries, t) for t in tasks]
+        for f in image_futures:
+            f.result()
+
+    # все картинки обработаны, а значит и все видео-задачи, которые из них
+    # появляются, уже поставлены в очередь video_executor - остаётся
+    # дождаться, пока эта очередь тоже опустеет
+    for f in video_futures:
+        f.result()
+    video_executor.shutdown(wait=True)
+
+    print("\nГотово. Финальные картинки и видео появятся в ComfyUI/output.")
 
     if args.run and failed_scenes:
         print(f"\n[!!!] Не удалось сгенерировать {len(failed_scenes)} сцен(ы) после {MAX_RETRIES} попыток каждая:")
