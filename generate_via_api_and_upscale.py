@@ -332,19 +332,6 @@ def load_upscale_template():
         return json.load(f)
 
 
-def scene_is_complete(num, which, animate_flag):
-    """Проверяет, есть ли уже готовый результат для этой сцены (картинка,
-    и видео, если сцена анимированная) — чтобы не тратить деньги повторно."""
-    image_pattern = os.path.join(COMFYUI_OUTPUT_DIR, f"{num}_{which}*.png")
-    if not glob.glob(image_pattern):
-        return False
-    if animate_flag == "TRUE":
-        video_path = os.path.join(COMFYUI_OUTPUT_DIR, f"{num}_{which}_video.mp4")
-        if not os.path.exists(video_path):
-            return False
-    return True
-
-
 def wait_for_comfy_job(prompt_id, timeout_sec=COMFY_POLL_TIMEOUT_SEC):
     started = time.time()
     while time.time() - started < timeout_sec:
@@ -546,6 +533,7 @@ def main():
     # единственное, что вообще происходит) - а саму генерацию запускаем
     # параллельно ниже, а не по одной сцене за раз
     tasks = []
+    video_only_tasks = []
     for row in rows:
         num = row.get("num", "").strip()
         if not num or not row.get("img_prompt_1", "").strip():
@@ -569,8 +557,26 @@ def main():
                 print("[i] Сухой прогон — ничего не отправлено. Добавь --run для реальной генерации.")
                 continue
 
-            if scene_is_complete(num, which, animate_flag):
+            # картинка и видео проверяются НЕЗАВИСИМО - раньше, если видео
+            # ещё не было готово (например, не успело сгенерироваться в
+            # прошлый запуск), вся сцена считалась "не готова" целиком и
+            # картинка перегенерировалась заново, хотя уже была готова и
+            # деньги на неё уже потрачены
+            video_prompt = row.get("video_prompt", "").strip()
+            video_needed = animate_flag == "TRUE" and bool(video_prompt)
+            scene_prefix = f"{num}_{which}"
+            existing_upscaled = find_upscaled_file(scene_prefix)
+            video_path = os.path.join(COMFYUI_OUTPUT_DIR, f"{scene_prefix}_video.mp4")
+            video_done = video_needed and os.path.exists(video_path)
+
+            if existing_upscaled and (not video_needed or video_done):
                 print(f"[=] Сцена {num} ({which}) уже готова, пропускаю (экономим деньги).")
+                continue
+
+            if existing_upscaled:
+                print(f"[=] Сцена {num} ({which}): картинка уже готова, "
+                      f"картинку заново не генерирую - доделываю только видео.")
+                video_only_tasks.append((num, which, video_prompt, existing_upscaled))
                 continue
 
             tasks.append((num, which, full_prompt, row))
@@ -578,7 +584,7 @@ def main():
     if not args.run:
         return
 
-    if not tasks:
+    if not tasks and not video_only_tasks:
         print("\nВсе сцены уже готовы, обрабатывать нечего.")
         return
 
@@ -634,6 +640,13 @@ def main():
         animate_flag = task[3].get("animate", "").strip().upper()
         video_prompt = task[3].get("video_prompt", "").strip()
         if animate_flag == "TRUE" and video_prompt:
+            future = video_executor.submit(run_video_with_retries, num, which, video_prompt, upscaled_path)
+            with video_futures_lock:
+                video_futures.append(future)
+
+    if video_only_tasks:
+        print(f"\n[i] {len(video_only_tasks)} сцен(ы) - картинка уже готова, ставлю в очередь только видео...")
+        for num, which, video_prompt, upscaled_path in video_only_tasks:
             future = video_executor.submit(run_video_with_retries, num, which, video_prompt, upscaled_path)
             with video_futures_lock:
                 video_futures.append(future)
