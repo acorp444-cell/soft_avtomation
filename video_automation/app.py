@@ -64,6 +64,19 @@ DEFAULT_CONFIG = {
 }
 
 
+REMOTE_RM_CHUNK_SIZE = 120  # см. _chunked() - сколько путей помещать в одну команду rm/truncate
+
+
+def _chunked(items, size):
+    """Разбивает список на порции по size штук - rm/truncate на сотни
+    файлов одной командой даёт слишком длинную командную строку для
+    локального ssh-процесса на Windows (WinError 206 - "имя файла или
+    расширение имеет слишком большую длину", на деле это предел длины
+    ВСЕЙ команды целиком, а не одного имени файла)."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
 def load_config() -> dict:
     if CONFIG_PATH.exists():
         try:
@@ -834,6 +847,16 @@ class App(tk.Tk):
             self.log(f"\n{prefix}[завершено, код: {exit_code}]\n")
         except Exception as e:
             self.log(f"{prefix}ОШИБКА выполнения: {e}")
+
+    def exec_remote_chunked_rm(self, command_name: str, remote_paths: list, prefix: str = "[уборка] "):
+        """rm -f / truncate -s 0 для БОЛЬШОГО списка файлов - выполняет
+        порциями (см. _chunked), а не всё одной командой, иначе на
+        большом сценарии (сотни файлов) команда вылетает с WinError 206."""
+        if not remote_paths:
+            return
+        for chunk in _chunked(remote_paths, REMOTE_RM_CHUNK_SIZE):
+            quoted = " ".join(f'"{p}"' for p in chunk)
+            self.exec_remote(f"{command_name} {quoted}", prefix=prefix)
 
     def exec_remote_own_connection(self, command: str, prefix: str = ""):
         """То же самое, что exec_remote, но открывает СВОЁ отдельное SSH-
@@ -2046,10 +2069,12 @@ class App(tk.Tk):
             # "сцена уже готова" - только в "сырая картинка ещё не
             # скачана" (см. process_scene_image), а для готовой сцены это
             # уже неважно
-            succeeded_prefixes = {p for p in image_prefixes if any(f.startswith(p + "_") for f in matching_images)}
-            raw_paths = " ".join(f'"{COMFYUI_INPUT_REMOTE_DIR}/{p}_raw.jpg"' for p in succeeded_prefixes)
-            run_command(client, f"rm -f {raw_paths}", on_output=lambda _: None)
-            self.log(f"{prefix}[+] Удалены отработавшие сырые картинки на сервере: {len(succeeded_prefixes)}")
+            succeeded_raw_paths = [f"{COMFYUI_INPUT_REMOTE_DIR}/{p}_raw.jpg" for p in image_prefixes
+                                    if any(f.startswith(p + "_") for f in matching_images)]
+            for chunk in _chunked(succeeded_raw_paths, REMOTE_RM_CHUNK_SIZE):
+                raw_paths = " ".join(f'"{p}"' for p in chunk)
+                run_command(client, f"rm -f {raw_paths}", on_output=lambda _: None)
+            self.log(f"{prefix}[+] Удалены отработавшие сырые картинки на сервере: {len(succeeded_raw_paths)}")
         else:
             self.log(f"{prefix}[i] Готовых картинок на сервере не найдено")
 
@@ -2062,8 +2087,9 @@ class App(tk.Tk):
             # что сцена не готова, и сгенерирует её заново, потратив деньги
             # повторно. Обнулённый файл занимает места ~0 (то, ради чего и
             # затевалась чистка), но по-прежнему "существует" для проверки.
-            remote_paths = " ".join(f'"{p}"' for p in remote_paths_to_remove)
-            run_command(client, f"truncate -s 0 {remote_paths}", on_output=lambda _: None)
+            for chunk in _chunked(remote_paths_to_remove, REMOTE_RM_CHUNK_SIZE):
+                remote_paths = " ".join(f'"{p}"' for p in chunk)
+                run_command(client, f"truncate -s 0 {remote_paths}", on_output=lambda _: None)
             self.log(f"{prefix}[+] Освобождено место на сервере (файлы обнулены, но не удалены - "
                       f"чтобы повторный запуск не сгенерировал их заново): {len(remote_paths_to_remove)} файл(ов)")
 
@@ -2608,8 +2634,7 @@ class App(tk.Tk):
                 + [f"{COMFYUI_INPUT_REMOTE_DIR}/{p}_raw.jpg" for p in infographic_prefixes]
                 + [f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}" for filename in matching]
             )
-            quoted = " ".join(f'"{p}"' for p in remote_paths_to_remove)
-            self.exec_remote(f"rm -f {quoted}", prefix="[уборка] ")
+            self.exec_remote_chunked_rm("rm -f", remote_paths_to_remove)
         except Exception as e:
             self.log(f"ОШИБКА скачивания результатов: {e}")
 
@@ -2855,9 +2880,7 @@ class App(tk.Tk):
                                               for n in all_nums)]
             for which in ("img1", "img2"):
                 remote_paths_to_remove += [f"{COMFYUI_INPUT_REMOTE_DIR}/{n}_{which}_raw.jpg" for n in all_nums]
-            quoted = " ".join(f'"{p}"' for p in remote_paths_to_remove)
-            if quoted:
-                self.exec_remote(f"rm -f {quoted}", prefix="[уборка] ")
+            self.exec_remote_chunked_rm("rm -f", remote_paths_to_remove)
         except Exception as e:
             self.log(f"[!] Уборка на сервере не удалась (не критично): {e}")
 
