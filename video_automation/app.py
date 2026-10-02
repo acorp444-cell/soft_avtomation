@@ -2619,10 +2619,18 @@ class App(tk.Tk):
             all_prefixes = local_prefixes | infographic_prefixes
             remote_files = list_remote_files(client, COMFYUI_OUTPUT_REMOTE_DIR, ".png")
             matching = [f for f in remote_files if any(f.startswith(p + "_") for p in all_prefixes)]
+            downloaded = 0
+            skipped = 0
             for i, filename in enumerate(matching, 1):
+                dest = upscaled_dir / filename
+                if dest.exists() and dest.stat().st_size > 0:
+                    skipped += 1  # уже скачано в прошлый раз (например, до обрыва связи) - не тратим время заново
+                    continue
                 self.log(f"  [{i}/{len(matching)}] {filename}...")
-                download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(upscaled_dir / filename))
-            self.log(f"\nГотово! Скачано апскейленных картинок: {len(matching)}. "
+                download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(dest))
+                downloaded += 1
+            self.log(f"\nГотово! Скачано апскейленных картинок: {downloaded}"
+                      f"{f' (уже было скачано: {skipped})' if skipped else ''}. "
                       f"Теперь можно выключить RunPod и перейти к шагу C.\n")
 
             # чистим за собой на сервере - иначе общие папки input/output
@@ -2864,10 +2872,19 @@ class App(tk.Tk):
             matching = [f for f in remote_files if any(f.startswith(p + "_") for p in prefixes)]
             upscaled_dir = block_dirs[block_name] / "upscaled"
             upscaled_dir.mkdir(parents=True, exist_ok=True)
-            self.log(f"\n>>> Скачиваю {len(matching)} картинок для {block_name}...\n")
+            downloaded = 0
+            skipped = 0
+            self.log(f"\n>>> Скачиваю картинки для {block_name} ({len(matching)} найдено на сервере)...\n")
             for i, filename in enumerate(matching, 1):
+                dest = upscaled_dir / filename
+                if dest.exists() and dest.stat().st_size > 0:
+                    skipped += 1  # уже скачано в прошлый раз (например, до обрыва связи) - не тратим время заново
+                    continue
                 self.log(f"  [{i}/{len(matching)}] {filename}...")
-                download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(upscaled_dir / filename))
+                download_file(client, f"{COMFYUI_OUTPUT_REMOTE_DIR}/{filename}", str(dest))
+                downloaded += 1
+            self.log(f"  {block_name}: скачано {downloaded}"
+                      f"{f', уже было скачано {skipped}' if skipped else ''}")
 
         self.log("\nГотово! Апскейл скачан по папкам блоков в local_generation "
                   "(теми же названиями, что вы вписали) - можно выключать RunPod и переходить к шагу C.\n")
